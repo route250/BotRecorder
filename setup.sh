@@ -6,4 +6,5 @@ fi
 source .venv/bin/activate
 python3 -m pip install -U pip setuptools
 
-pip install -U pyaudio 'numpy<2.0.0'
+pip install -U pyaudio 'numpy<2.0.0' scipy
+pip install -U matplotlib
