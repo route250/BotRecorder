@@ -21,9 +21,22 @@ CHANNELS:int = 1
 RATE:int = 16000  # 16kHz
 CHUNK_SEC:float = 0.2 # 0.2sec
 CHUNK_LEN:int = int(RATE*CHUNK_SEC)
+BUFFER_LEN:int = int(RATE/CHUNK_LEN) * CHUNK_LEN
 DURATION:float = 1.0
 
 import numpy as np
+
+def np_shiftL( a:np.ndarray, n:int=1 ):
+    if 0<n and n<len(a)-1:
+        a[:-n] = a[n:]
+
+def np_append( buf:AudioF32, x:AudioF32 ):
+    n:int = len(x)
+    if n>=len(buf):
+        buf = x[:-len(buf)]
+    else:
+        buf[:-n] = buf[n:]
+        buf[-n:] = x
 
 def lms_filter(desired_signal, input_signal, mu=0.01, filter_order=32):
     """
@@ -60,13 +73,16 @@ class EchoLessRecorder:
         self._stream:Stream
 
         # 再生用
-        self._play_list:list[AudioF32] = []
+        self._play_byffer_list:list[AudioF32] = []
         self._play_buffer:AudioF32|None = None
         self._play_pos:int = 0
         # エコーバックデータ保存用
-        self._echo_buffer:list[AudioF32] = [EchoLessRecorder.ZerosF32,EchoLessRecorder.ZerosF32]
+        self._echo_list:list[AudioF32] = [EchoLessRecorder.ZerosF32,EchoLessRecorder.ZerosF32]
         # 録音データの保存用
-        self._rec_buffer:list[AudioF32] = []
+        self._rec_list:list[AudioF32] = []
+        self._echo_array:AudioF32 = np.zeros( BUFFER_LEN*2, dtype=np.float32 )
+        self._echo_len:int = 0
+        self._rec_array:AudioF32 = np.zeros( BUFFER_LEN*2, dtype=np.float32 )
 
         # LMSフィルタの基本設定
         self.lms_mu = 0.0001  # フィルタの学習率（調整が必要）
@@ -76,7 +92,7 @@ class EchoLessRecorder:
 
     def is_playing(self) ->int:
         with self._lock:
-            n:int = len(self._play_list)
+            n:int = len(self._play_byffer_list)
             if self._play_buffer is not None:
                 n+=1
             return n
@@ -91,7 +107,11 @@ class EchoLessRecorder:
 
     def add_play(self, data:AudioF32):
         with self._lock:
-            self._play_list.append(data)
+            if self._play_buffer is None:
+                self._play_buffer = data.copy()
+                self._play_pos = 0
+            else:
+                self._play_byffer_list.append(data.copy())
 
     def start(self):
         with self._lock:
@@ -114,61 +134,56 @@ class EchoLessRecorder:
             self._paudio.terminate()
 
     # コールバック関数の定義
-    def _audio_callback(self, in_data:bytes|None, frame_count, time_info, status) ->tuple[bytes,int]:
+    def _audio_callback(self, in_bytes:bytes|None, frame_count, time_info, status) ->tuple[bytes,int]:
         with self._lock:
             # 録音データ
-            if in_data:
-                self._rec_buffer.append( np.frombuffer(in_data, dtype=np.float32) )
+            if in_bytes:
+                in_f32:AudioF32 = np.frombuffer( in_bytes, dtype=np.float32 )
+                np_append( self._rec_array, in_f32 )
+                self._rec_list.append( in_f32 )
+            else:
+                print("in_data is None")
 
             # 再生用データ
-            play_data = np.zeros(CHUNK_LEN, dtype=np.float32)
-            if self._play_buffer is not None or len(self._play_list)>0:
-                p:int = 0
-                while p<CHUNK_LEN:
-                    if self._play_buffer is None:
-                        if len(self._play_list)>0:
-                            self._play_buffer = self._play_list.pop(0)
-                            self._play_pos = 0
-                        else:
-                            break
-                    if self._play_buffer is not None:
-                        l:int = min(CHUNK_LEN-p, len(self._play_buffer)-self._play_pos)
-                        play_data[p:p+l] = self._play_buffer[self._play_pos:self._play_pos+l]
-                        p+=1
-                        self._play_pos +=1
-                        if len(self._play_buffer)<=self._play_pos:
-                            self._play_buffer = None
-                            self._play_pos = 0
-            self._echo_buffer.append( play_data )
-            return (play_data.tobytes(),pyaudio.paContinue)
+            play_f32 = np.zeros(CHUNK_LEN, dtype=np.float32)
+            p:int = 0
+            while p<CHUNK_LEN and self._play_buffer is not None:
+                l:int = min(CHUNK_LEN-p, len(self._play_buffer)-self._play_pos)
+                play_f32[p:p+l] = self._play_buffer[self._play_pos:self._play_pos+l]
+                p+=l
+                self._play_pos +=l
+                if len(self._play_buffer)<=self._play_pos:
+                    self._play_buffer = self._play_byffer_list.pop(0) if len(self._play_byffer_list)>0 else None
+                    self._play_pos = 0
+            self._echo_list.append( play_f32 )
+            if p>0:
+                self._echo_len += p
+            else:
+                self._echo_len = 0
+            np_append( self._echo_array, play_f32 )
+        return (play_f32.tobytes(),pyaudio.paContinue)
 
     def get_audio(self) ->tuple[AudioF32,AudioF32]:
+        delayc:int = 2
         with self._lock:
-            if len(self._rec_buffer)<2:
+            es:int = delayc*2
+            if len(self._rec_list)<es:
                 return EchoLessRecorder.EmptyF32,EchoLessRecorder.EmptyF32
             # 録音データをnumpy配列に変換
-            rec_buf = self._rec_buffer
-            self._rec_buffer = [rec_buf.pop()]
-            echo_buf = self._echo_buffer
-            self._echo_buffer = [ echo_buf[-2], echo_buf[-1] ] if len(echo_buf)>=2 else [EchoLessRecorder.ZerosF32,EchoLessRecorder.ZerosF32]
+            rec_buf = self._rec_list
+            self._rec_list = []
+            echo_buf = self._echo_list
+            self._echo_list = self._echo_list[-es:]
+        
         raw_audio_f32:AudioF32 = np.concatenate(rec_buf)
         echo_data:AudioF32 = np.concatenate(echo_buf)
 
-        xx = self._apply_filter( raw_audio_f32, echo_data )
-        return xx,raw_audio_f32
+        filtered_audio_f32 = self._apply_filter( raw_audio_f32, echo_data )
+        return filtered_audio_f32,raw_audio_f32
 
-    def get_audio1(self) ->tuple[AudioF32,AudioF32]:
-        with self._lock:
-            if len(self._rec_buffer)<2:
-                return EchoLessRecorder.EmptyF32,EchoLessRecorder.EmptyF32
-            # 録音データをnumpy配列に変換
-            rec_buf = self._rec_buffer
-            self._rec_buffer = [rec_buf.pop()]
-            echo_buf = self._echo_buffer
-            self._echo_buffer = [ echo_buf[-2], echo_buf[-1] ] if len(echo_buf)>=2 else [EchoLessRecorder.ZerosF32,EchoLessRecorder.ZerosF32]
-        raw_audio_f32:AudioF32 = np.concatenate(rec_buf)
-        echo_data:AudioF32 = np.concatenate(echo_buf)
-        offset_end:int = echo_data.shape[0]-raw_audio_f32.shape[0]
+    def _apply_filter(self, raw_audio_f32:AudioF32, echo_audio_f32:AudioF32) ->AudioF32:
+        rlen:int = raw_audio_f32.shape[0]
+        offset_end:int = echo_audio_f32.shape[0]-rlen
         if offset_end<0:
             raise ValueError('invalid buffer size???')
 
@@ -177,41 +192,39 @@ class EchoLessRecorder:
         # 平均化のためのカーネルを作成
         kernel = np.ones(window_size) / window_size
         # 移動平均を計算
-        moving_average = np.convolve(echo_data, kernel, mode='same')
+        moving_average = np.convolve(echo_audio_f32, kernel, mode='same')
 
         # 再生音を引き算してノイズ除去
         min_volume:float = sys.float_info.max
         best_offset:int = 0
-        best_ad = raw_audio_f32
+        best_mask = raw_audio_f32
 
         # 最適なオフセットを探す
-        rlen:int = raw_audio_f32.shape[0]
         for offset in range(offset_end):  # -CHUNKから+CHUNKまでの範囲を探す
-            adjusted_play_data = moving_average[offset:offset+rlen]
-            subtracted_data = raw_audio_f32 - adjusted_play_data*0.01
-            volume:float = np.sum(np.abs(subtracted_data))
-
+            mask_f32 = moving_average[offset:offset+rlen]
+            subtracted_f32 = raw_audio_f32 - mask_f32*0.1
+            volume:float = np.sum(np.abs(subtracted_f32))
             if volume < min_volume:
                 min_volume = volume
                 best_offset = offset
-                best_ad = adjusted_play_data
+                best_mask = mask_f32
 
         filtered_audio_f32:AudioF32 = raw_audio_f32
         best_lv=0.1
         for i in range(1,200):
             lv:float = float(i)/100.0
-            subtracted_data = raw_audio_f32 - best_ad*lv
-            volume:float = np.sum(np.abs(subtracted_data))
+            subtracted_f32 = raw_audio_f32 - best_mask*lv
+            volume:float = np.sum(np.abs(subtracted_f32))
             if volume < min_volume:
                 min_volume = volume
                 best_lv = lv
-                filtered_audio_f32 = subtracted_data
+                filtered_audio_f32 = subtracted_f32
         
         print(f" {best_offset}:{best_lv}",end="")
         # print(f"最適なオフセット: {best_offset} サンプル")
-        return filtered_audio_f32, raw_audio_f32
+        return filtered_audio_f32
 
-    def _apply_filter(self, recorded_data: AudioF32, played_data: AudioF32) -> AudioF32:
+    def _apply_filter_lms(self, recorded_data: AudioF32, played_data: AudioF32) -> AudioF32:
 
         filtered_data:AudioF32 = np.zeros_like(recorded_data)
 
