@@ -151,9 +151,15 @@ class EchoLessRecorder:
     def stop(self):
         with self._lock:
             # ストリームを停止・終了
-            self._stream.stop_stream()
-            self._stream.close()
-            self._paudio.terminate()
+            #self._stream.stop_stream()
+            try:
+                self._stream.close()
+            except:
+                pass
+            try:
+                self._paudio.terminate()
+            except:
+                pass
 
     # コールバック関数の定義
     def _audio_callback(self, in_bytes:bytes|None, frame_count, time_info, status) ->tuple[bytes,int]:
@@ -236,14 +242,14 @@ class EchoLessRecorder:
         offset_center:int = max(0,offset_end - self._echo_delay_idx)
 
         echo_ave:float = signal_ave(raw_echo_audio_f32)
-        if echo_ave>0.001:
-            raw_ave:float = signal_ave(raw_audio_f32)
+        raw_ave:float = signal_ave(raw_audio_f32)
+        if echo_ave>0.001 and raw_ave>0.001:
             sig_rate:float = raw_ave / echo_ave
             echo_audio_f32 = raw_echo_audio_f32 * sig_rate
         else:
             echo_audio_f32 = raw_echo_audio_f32
 
-        if not self.echo_cancel or echo_ave<=0.001:
+        if not self.echo_cancel or echo_ave<=0.001 or raw_ave<=0.001:
             # diff 5423
             echod = echo_audio_f32[offset_center:offset_center+raw_len]
             return raw_audio_f32, echod
@@ -330,10 +336,15 @@ def sin_signal( *, freq:int=220, duration:float=3.0, vol:float=0.5) ->AudioF32:
     fw:AudioF32 = np.hanning(fw_half_len*2)
     signal_f32[:fw_half_len] *= fw[:fw_half_len]
     signal_f32[-fw_half_len:] *= fw[-fw_half_len:]
+    print(f"signal len{len(signal_f32)}")
     # 指定長さにする
     data_len:int = int( RATE * duration)
     n:int = (data_len+CHUNK_LEN-1)//CHUNK_LEN
-    result:AudioF32 = np.repeat( signal_f32, n )[:data_len]
+    aaa = [ signal_f32 for i in range(n) ]
+    result = np.concatenate( aaa )
+    result = result[:data_len]
+    #result:AudioF32 = np.repeat( signal_f32, n )[:data_len]
+    print(f"result len{len(result)} {data_len} {CHUNK_LEN}x{n}")
     return result
 
 def main():
@@ -374,6 +385,8 @@ def main():
             echo_audio_list.append(echo_seg_f32)
         time.sleep( 1.0 )  # ミリ秒単位で指定
 
+    el_recorder.stop()
+
     # 生の録音音声を保存
     raw_seg_f32 = np.concatenate( raw_audio_list )
     save_wave(output_raw_filename, raw_seg_f32, RATE)
@@ -395,12 +408,12 @@ def main():
     plt.figure()
 
     plt.plot(raw_seg_f32[ps:pe], label='Mic Signal')
-    plt.plot(filtered_audio_f32[ps:pe], label='Filtered Signal')
+    plt.plot(filtered_audio_f32[ps:pe], label='Filtered Signal', alpha=0.5)
     plt.legend()
 
     plt.figure()
     plt.plot(raw_seg_f32[ps:pe], label='Mic Signal')
-    plt.plot(echo_audio_f32[ps:pe], label='Echo Signal')
+    plt.plot(echo_audio_f32[ps:pe], label='Echo Signal', alpha=0.5)
     plt.legend()
 
     plt.show()
