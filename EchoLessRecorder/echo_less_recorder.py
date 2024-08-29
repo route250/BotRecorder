@@ -23,7 +23,6 @@ RATE:int = 16000  # 16kHz
 CHUNK_SEC:float = 0.2 # 0.2sec
 CHUNK_LEN:int = int(RATE*CHUNK_SEC)
 BUFFER_LEN:int = int(RATE/CHUNK_LEN) * CHUNK_LEN
-DURATION:float = 1.0
 
 import numpy as np
 
@@ -62,6 +61,20 @@ def lms_filter(desired_signal, input_signal, mu=0.01, filter_order=32):
 
     return y, e
 
+def signal_ave( signal:AudioF32 ) ->float:
+    if not isinstance(signal, np.ndarray) or signal.dtype != np.float32 or len(signal.shape)!=1:
+        raise TypeError("Invalid signal")
+    # 絶対値が0.001以上の要素をフィルタリングするためのブール配列
+    boolean_array = np.abs(signal) >= 0.001
+    # 条件を満たす要素を抽出
+    filtered_array = signal[boolean_array]
+    if len(filtered_array)>0:
+        # 平均を計算
+        ave = np.mean(np.abs(filtered_array))
+        return float(ave)
+    else:
+        return 0.0
+
 class EchoLessRecorder:
     EmptyF32:AudioF32 = np.zeros(0,dtype=np.float32)
     ZerosF32:AudioF32 = np.zeros(CHUNK_LEN,dtype=np.float32)
@@ -72,6 +85,8 @@ class EchoLessRecorder:
         # PyAudioオブジェクトの作成
         self._paudio:pyaudio.PyAudio = pyaudio.PyAudio()
         self._stream:Stream
+        # 録音設定
+        self._rec_boost:float = 3.0
 
         # 再生用
         self._play_byffer_list:list[AudioF32] = []
@@ -202,77 +217,80 @@ class EchoLessRecorder:
             self._rec_list = []
             echo_buf = self._echo_list
             self._echo_list = self._echo_list[-es:]
-        
-        raw_audio_f32:AudioF32 = np.concatenate(rec_buf)
-        raw_audio_f32 = raw_audio_f32 * 3.0
-        echo_data:AudioF32 = np.concatenate(echo_buf)
-        filtered_audio_f32, echo = self._apply_filter( raw_audio_f32, echo_data )
-        return filtered_audio_f32,raw_audio_f32,echo
+        # 録音データ
+        raw_f32:AudioF32 = np.concatenate(rec_buf)
+        if 0.0<self._rec_boost<=10.0:
+            raw_f32 = raw_f32 * self._rec_boost
+        # 音響データ
+        echo_full_f32:AudioF32 = np.concatenate(echo_buf)
+        # フィルタ処理
+        filtered_f32, echo_f32 = self._apply_filter( raw_f32, echo_full_f32 )
 
-    def _apply_filter(self, raw_audio_f32:AudioF32, echo_audio_f32:AudioF32) ->tuple[AudioF32,AudioF32]:
-        rlen:int = raw_audio_f32.shape[0]
-        offset_end:int = echo_audio_f32.shape[0]-rlen
+        return filtered_f32,raw_f32,echo_f32
+
+    def _apply_filter(self, raw_audio_f32:AudioF32, raw_echo_audio_f32:AudioF32) ->tuple[AudioF32,AudioF32]:
+        raw_len:int = raw_audio_f32.shape[0]
+        offset_end:int = raw_echo_audio_f32.shape[0]-raw_len
         if offset_end<0:
             raise ValueError('invalid buffer size???')
+        offset_center:int = max(0,offset_end - self._echo_delay_idx)
 
-        raw_ave:float = np.mean(np.abs(raw_audio_f32))
-        echo_ave:float = np.mean(np.abs(echo_audio_f32))
-        sig_rate:float = raw_ave / echo_ave
+        echo_ave:float = signal_ave(raw_echo_audio_f32)
+        if echo_ave>0.001:
+            raw_ave:float = signal_ave(raw_audio_f32)
+            sig_rate:float = raw_ave / echo_ave
+            echo_audio_f32 = raw_echo_audio_f32 * sig_rate
+        else:
+            echo_audio_f32 = raw_echo_audio_f32
 
-        if not self.echo_cancel:
+        if not self.echo_cancel or echo_ave<=0.001:
             # diff 5423
-            diff:int = len(echo_audio_f32) - len(raw_audio_f32)
-            s:int = diff # self._echo_delay_idx
-            e:int = s + len(raw_audio_f32)
-            echod = echo_audio_f32[s:e]*sig_rate * 0.7
-            filtered = raw_audio_f32 - echod
-            return filtered,echod
+            echod = echo_audio_f32[offset_center:offset_center+raw_len]
+            return raw_audio_f32, echod
  
         # 移動平均のウィンドウサイズ
         window_size = 3
         # 平均化のためのカーネルを作成
-        kernel = np.ones(window_size) / window_size
+        window_kernel = np.ones(window_size) / window_size
         # 移動平均を計算
-        moving_average = np.convolve(echo_audio_f32, kernel, mode='same')
+        moving_average = np.convolve(echo_audio_f32, window_kernel, mode='same')
 
         # 再生音を引き算してノイズ除去
-        min_volume:float = sys.float_info.max
+        filtered_audio_f32:AudioF32 = raw_audio_f32
+        best_volume:float = sys.float_info.max
         best_offset:int = 0
+        best_lv:float = 1.0
         best_mask = raw_audio_f32
-        best_echo = raw_audio_f32
 
-        st = max(0, self._echo_delay_idx - 1010 )
-        ed = min(offset_end, self._echo_delay_idx - 1010 +1 )
+        st = max(0, offset_center - 1000 )
+        ed = min(offset_end, offset_center + 1000 )
         # 最適なオフセットを探す
         for offset in range(st,ed):
-            mask_f32 = moving_average[offset:offset+rlen]
-            subtracted_f32 = raw_audio_f32 - mask_f32*sig_rate
+            mask_f32 = moving_average[offset:offset+raw_len]
+            subtracted_f32 = raw_audio_f32 - mask_f32
             volume:float = np.sum(np.abs(subtracted_f32))
-            if volume < min_volume:
-                min_volume = volume
+            if volume < best_volume:
+                filtered_audio_f32 = subtracted_f32
+                best_volume = volume
                 best_offset = offset
                 best_mask = mask_f32
-                best_echo = echo_audio_f32[offset:offset+rlen]
 
-        filtered_audio_f32:AudioF32 = raw_audio_f32
-        best_lv=sig_rate
-        lo_rate = max( 0.1, sig_rate*0.5 )
-        hi_rate = min( 2.0, sig_rate*1.5)
+        lo_rate = 0.5
+        hi_rate = 1.5
         lv = lo_rate
         while lv<=hi_rate:
             mask_f32 = best_mask *lv
             subtracted_f32 = raw_audio_f32 - mask_f32
             volume:float = np.sum(np.abs(subtracted_f32))
-            if volume < min_volume:
-                min_volume = volume
-                best_lv = lv
+            if volume < best_volume:
                 filtered_audio_f32 = subtracted_f32
-                best_mask = mask_f32
-            lv += 0.05
-        
-        print(f" offset:{best_offset:6d} rate:{best_lv:.3f} vol:{min_volume:.2f}")
-        # print(f"最適なオフセット: {best_offset} サンプル")
-        return filtered_audio_f32, best_mask
+                best_volume = volume
+                best_lv = lv
+            lv += 0.1
+        best_mask = best_mask * best_lv
+        best_echo = echo_audio_f32[offset:offset+raw_len] * best_lv
+        print(f"filter offset:{best_offset:6d} rate:{best_lv:.3f} vol:{best_volume:.2f}")
+        return filtered_audio_f32, best_echo
 
     def _apply_filter_lms(self, recorded_data: AudioF32, played_data: AudioF32) -> AudioF32:
 
@@ -300,18 +318,23 @@ def save_wave(filename, data, rate):
         wf.setframerate(rate)
         wf.writeframes( (data*32767).astype(np.int16).tobytes())
 
-def sinwave(frequency:int=220,vol:float=0.5,duration:float=3.0) ->AudioF32:
-    # パラメータの設定
-    sampling_rate = RATE # 16000  # サンプリングレート 16kHz
-    #frequency = 220 # 220  # 生成する音声の周波数 100Hz
-    #duration = 10.0  # 生成する音声の長さ（秒）
-    # 時間軸の作成
-    t = np.linspace(0, duration, int(sampling_rate * duration), endpoint=False)
-    # サイン波の生成
-    audio_signal = np.sin(2 * np.pi * frequency * t)
-    # データ型をfloat32に変換
-    audio_signal_float32 = audio_signal.astype(np.float32) * vol
-    return audio_signal_float32
+def sin_signal( *, freq:int=220, duration:float=3.0, vol:float=0.5) ->AudioF32:
+    #frequency # 生成する音声の周波数 100Hz
+    signal_sec:float = CHUNK_LEN / RATE  # 生成する音声の長さ（秒）
+    t = np.linspace(0, signal_sec, CHUNK_LEN, endpoint=False) # 時間軸
+    signal_f32:AudioF32 = np.sin(2 * np.pi * freq * t).astype(np.float32) # サイン波の生成
+    # 音量調整
+    signal_f32 = signal_f32 * vol
+    # フェードin/out
+    fw_half_len:int = int(CHUNK_LEN/5)
+    fw:AudioF32 = np.hanning(fw_half_len*2)
+    signal_f32[:fw_half_len] *= fw[:fw_half_len]
+    signal_f32[-fw_half_len:] *= fw[-fw_half_len:]
+    # 指定長さにする
+    data_len:int = int( RATE * duration)
+    n:int = (data_len+CHUNK_LEN-1)//CHUNK_LEN
+    result:AudioF32 = np.repeat( signal_f32, n )[:data_len]
+    return result
 
 def main():
 
@@ -331,7 +354,9 @@ def main():
         # 16kHzにリサンプリング（必要ならば）
         if iw.getframerate() != RATE:
             play_audio_f32 = resample(play_audio_f32, int(len(play_audio_f32) * RATE / iw.getframerate()))
-    play_audio_f32 = sinwave(220,0.8,3.0)
+
+    play_audio_f32 = sin_signal( freq=220, duration=3.0, vol=0.5 )
+    
     el_recorder.add_play( play_audio_f32 )
 
     print("録音と再生を開始します...")
@@ -339,40 +364,45 @@ def main():
 
     filterd_audio_list = []
     raw_audio_list = []
-    echo_list = []
+    echo_audio_list = []
     # 指定した期間録音
     while el_recorder.is_active() and el_recorder.is_playing():
-        filtered_segment_f32, raw_audio_f32, echo_f32 = el_recorder.get_audio()
-        if len(filtered_segment_f32)>0:
-            filterd_audio_list.append(filtered_segment_f32)
-            raw_audio_list.append(raw_audio_f32)
-            echo_list.append(echo_f32)
-        time.sleep( DURATION )  # ミリ秒単位で指定
+        filtered_seg_f32, raw_seg_f32, echo_seg_f32 = el_recorder.get_audio()
+        if len(filtered_seg_f32)>0:
+            filterd_audio_list.append(filtered_seg_f32)
+            raw_audio_list.append(raw_seg_f32)
+            echo_audio_list.append(echo_seg_f32)
+        time.sleep( 1.0 )  # ミリ秒単位で指定
 
     # 生の録音音声を保存
-    raw_audio_f32 = np.concatenate( raw_audio_list )
-    save_wave(output_raw_filename, raw_audio_f32, RATE)
+    raw_seg_f32 = np.concatenate( raw_audio_list )
+    save_wave(output_raw_filename, raw_seg_f32, RATE)
+    print(f"録音されたデータが {output_raw_filename} に保存されました。")
+
+    # 再生音声を保存
+    echo_audio_f32 = np.concatenate(echo_audio_list )
+    save_wave(output_echo_filename, echo_audio_f32, RATE)
+    print(f"再生データが {output_echo_filename} に保存されました。")
 
     # 引き算後の音声を保存
     filtered_audio_f32 = np.concatenate(filterd_audio_list )
     save_wave(output_filtered_filename, filtered_audio_f32, RATE)
-
-    # 引き算後の音声を保存
-    echo_list2 = np.concatenate(echo_list )
-    save_wave(output_echo_filename, echo_list2, RATE)
-
-    print(f"録音されたデータが {output_raw_filename} に保存されました。")
     print(f"引き算されたデータが {output_filtered_filename} に保存されました。")
 
+    ps:int = CHUNK_LEN*5
+    pe:int = CHUNK_LEN*6
+
     plt.figure()
-    plt.plot(raw_audio_f32[CHUNK_LEN*5:CHUNK_LEN*6], label='Original Mic Signal')
-    plt.plot(filtered_audio_f32[CHUNK_LEN*5:CHUNK_LEN*6], label='Filtered Signal')
+
+    plt.plot(raw_seg_f32[ps:pe], label='Mic Signal')
+    plt.plot(filtered_audio_f32[ps:pe], label='Filtered Signal')
     plt.legend()
 
     plt.figure()
-    plt.plot(raw_audio_f32[CHUNK_LEN*5:CHUNK_LEN*6], label='Original Mic Signal')
-    plt.plot(echo_list2[CHUNK_LEN*5:CHUNK_LEN*6], label='Echo Signal')
+    plt.plot(raw_seg_f32[ps:pe], label='Mic Signal')
+    plt.plot(echo_audio_f32[ps:pe], label='Echo Signal')
     plt.legend()
+
     plt.show()
 
 def mlstest():
@@ -388,8 +418,6 @@ def mlstest():
     filtered_signal, error_signal = lms_filter(mic_signal, speaker_signal)
 
     # 結果のプロット（matplotlibが必要です）
-
-
     plt.figure()
     plt.plot(t, mic_signal[CHUNK_LEN:CHUNK_LEN*3], label='Original Mic Signal')
     plt.plot(t, filtered_signal[CHUNK_LEN:CHUNK_LEN*3], label='Filtered Signal')
