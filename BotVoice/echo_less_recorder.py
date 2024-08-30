@@ -6,15 +6,10 @@ import pyaudio
 from pyaudio import Stream
 import wave
 import numpy as np
-from numpy.typing import NDArray
-from scipy.signal import resample
+
 import matplotlib.pyplot as plt
 
-# 型エイリアス
-AudioF32 = NDArray[np.float32]
-AudioF16 = NDArray[np.float16]
-AudioI16 = NDArray[np.int16]
-AudioI8 = NDArray[np.int8]
+from .rec_util import AudioF32, np_append, save_wave, load_wave, signal_ave, sin_signal
 
 # 録音/再生の設定
 PA_FORMAT = pyaudio.paFloat32
@@ -25,18 +20,6 @@ CHUNK_LEN:int = int(RATE*CHUNK_SEC)
 BUFFER_LEN:int = int(RATE/CHUNK_LEN) * CHUNK_LEN
 
 import numpy as np
-
-def np_shiftL( a:np.ndarray, n:int=1 ):
-    if 0<n and n<len(a)-1:
-        a[:-n] = a[n:]
-
-def np_append( buf:AudioF32, x:AudioF32 ):
-    n:int = len(x)
-    if n>=len(buf):
-        buf = x[:-len(buf)]
-    else:
-        buf[:-n] = buf[n:]
-        buf[-n:] = x
 
 def lms_filter(desired_signal, input_signal, mu=0.01, filter_order=32):
     """
@@ -61,20 +44,6 @@ def lms_filter(desired_signal, input_signal, mu=0.01, filter_order=32):
 
     return y, e
 
-def signal_ave( signal:AudioF32 ) ->float:
-    if not isinstance(signal, np.ndarray) or signal.dtype != np.float32 or len(signal.shape)!=1:
-        raise TypeError("Invalid signal")
-    # 絶対値が0.001以上の要素をフィルタリングするためのブール配列
-    boolean_array = np.abs(signal) >= 0.001
-    # 条件を満たす要素を抽出
-    filtered_array = signal[boolean_array]
-    if len(filtered_array)>0:
-        # 平均を計算
-        ave = np.mean(np.abs(filtered_array))
-        return float(ave)
-    else:
-        return 0.0
-
 class EchoLessRecorder:
     EmptyF32:AudioF32 = np.zeros(0,dtype=np.float32)
     ZerosF32:AudioF32 = np.zeros(CHUNK_LEN,dtype=np.float32)
@@ -83,8 +52,8 @@ class EchoLessRecorder:
         # Lock
         self._lock:Lock = Lock()
         # PyAudioオブジェクトの作成
-        self._paudio:pyaudio.PyAudio = pyaudio.PyAudio()
-        self._stream:Stream
+        self._paudio:pyaudio.PyAudio|None = pyaudio.PyAudio()
+        self._stream:Stream|None = None
         # 録音設定
         self._rec_boost:float = 3.0
 
@@ -96,10 +65,6 @@ class EchoLessRecorder:
         self._echo_list:list[AudioF32] = [EchoLessRecorder.ZerosF32,EchoLessRecorder.ZerosF32]
         # 録音データの保存用
         self._rec_list:list[AudioF32] = []
-        self._echo_array:AudioF32 = np.zeros( BUFFER_LEN*2, dtype=np.float32 )
-        self._echo_len:int = 0
-        self._rec_array:AudioF32 = np.zeros( BUFFER_LEN*2, dtype=np.float32 )
-
         # 
         self._echo_delay_sec:float = 0.0
         self._echo_delay_idx:int = 0
@@ -121,11 +86,11 @@ class EchoLessRecorder:
 
     def is_active(self):
         with self._lock:
-            return self._stream and self._stream.is_active()
+            return self._stream and self._stream and self._stream.is_active()
     
     def is_stopped(self):
         with self._lock:
-            return self._stream and self._stream.is_stopped()
+            return self._stream is None or self._stream.is_stopped()
 
     def add_play(self, data:AudioF32):
         with self._lock:
@@ -136,30 +101,49 @@ class EchoLessRecorder:
                 self._play_byffer_list.append(data.copy())
 
     def start(self):
-        with self._lock:
-            # ストリームを開く
-            self._stream = self._paudio.open(format=PA_FORMAT,
+        self.stop()
+        # ストリームを開く
+        pa = pyaudio.PyAudio()
+        st = pa.open(format=PA_FORMAT,
                             channels=CHANNELS,
                             rate=RATE,
                             input=True,
                             output=True,
                             frames_per_buffer=CHUNK_LEN,
                             stream_callback=self._audio_callback)
+        with self._lock:
+            self._paudio = pa
             # ストリームを開始
-            self._stream.start_stream()
+            self._stream = st
+            st.start_stream()
 
     def stop(self):
+        # ストリームを停止・終了
         with self._lock:
-            # ストリームを停止・終了
-            #self._stream.stop_stream()
-            try:
-                self._stream.close()
-            except:
-                pass
-            try:
-                self._paudio.terminate()
-            except:
-                pass
+            st = self._stream
+            self._stream = None
+            pa = self._paudio
+            self._paudio = None
+        try:
+            if st is not None:
+                st.close()
+        except:
+            pass
+        try:
+            if st is not None:
+                st.stop_stream()
+        except:
+            pass
+        try:
+            if st is not None:
+                st.close()
+        except:
+            pass
+        try:
+            if pa is not None:
+                pa.terminate()
+        except:
+            pass
 
     # コールバック関数の定義
     def _audio_callback(self, in_bytes:bytes|None, frame_count, time_info, status) ->tuple[bytes,int]:
@@ -189,7 +173,6 @@ class EchoLessRecorder:
 
         with self._lock:
             # 録音データ
-            np_append( self._rec_array, in_f32 )
             self._rec_list.append( in_f32 )
 
             # 再生用データ
@@ -204,11 +187,6 @@ class EchoLessRecorder:
                     self._play_buffer = self._play_byffer_list.pop(0) if len(self._play_byffer_list)>0 else None
                     self._play_pos = 0
             self._echo_list.append( play_f32 )
-            if p>0:
-                self._echo_len += p
-            else:
-                self._echo_len = 0
-            np_append( self._echo_array, play_f32 )
 
         return (play_f32.tobytes(),pyaudio.paContinue)
 
@@ -251,11 +229,13 @@ class EchoLessRecorder:
 
         if not self.echo_cancel or echo_ave<=0.001 or raw_ave<=0.001:
             # diff 5423
-            echod = echo_audio_f32[offset_center:offset_center+raw_len]
-            return raw_audio_f32, echod
+            offset = offset_center+390
+            echod = echo_audio_f32[offset:offset+raw_len]
+            filterd = raw_audio_f32 - echod
+            return filterd, echod
  
         # 移動平均のウィンドウサイズ
-        window_size = 3
+        window_size = 5
         # 平均化のためのカーネルを作成
         window_kernel = np.ones(window_size) / window_size
         # 移動平均を計算
@@ -268,8 +248,8 @@ class EchoLessRecorder:
         best_lv:float = 1.0
         best_mask = raw_audio_f32
 
-        st = max(0, offset_center - 1000 )
-        ed = min(offset_end, offset_center + 1000 )
+        st = max(0, offset_center +380 )
+        ed = min(offset_end, offset_center + 400 )
         # 最適なオフセットを探す
         for offset in range(st,ed):
             mask_f32 = moving_average[offset:offset+raw_len]
@@ -316,37 +296,6 @@ class EchoLessRecorder:
 
         return filtered_data
 
-# WAVファイルとして保存
-def save_wave(filename, data, rate):
-    with wave.open(filename, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(2)
-        wf.setframerate(rate)
-        wf.writeframes( (data*32767).astype(np.int16).tobytes())
-
-def sin_signal( *, freq:int=220, duration:float=3.0, vol:float=0.5) ->AudioF32:
-    #frequency # 生成する音声の周波数 100Hz
-    signal_sec:float = CHUNK_LEN / RATE  # 生成する音声の長さ（秒）
-    t = np.linspace(0, signal_sec, CHUNK_LEN, endpoint=False) # 時間軸
-    signal_f32:AudioF32 = np.sin(2 * np.pi * freq * t).astype(np.float32) # サイン波の生成
-    # 音量調整
-    signal_f32 = signal_f32 * vol
-    # フェードin/out
-    fw_half_len:int = int(CHUNK_LEN/5)
-    fw:AudioF32 = np.hanning(fw_half_len*2)
-    signal_f32[:fw_half_len] *= fw[:fw_half_len]
-    signal_f32[-fw_half_len:] *= fw[-fw_half_len:]
-    print(f"signal len{len(signal_f32)}")
-    # 指定長さにする
-    data_len:int = int( RATE * duration)
-    n:int = (data_len+CHUNK_LEN-1)//CHUNK_LEN
-    aaa = [ signal_f32 for i in range(n) ]
-    result = np.concatenate( aaa )
-    result = result[:data_len]
-    #result:AudioF32 = np.repeat( signal_f32, n )[:data_len]
-    print(f"result len{len(result)} {data_len} {CHUNK_LEN}x{n}")
-    return result
-
 def main():
 
     # 読み込むWaveファイルの設定
@@ -356,50 +305,44 @@ def main():
     output_echo_filename = 'tmp/echo_audio.wav'
 
     el_recorder:EchoLessRecorder = EchoLessRecorder()
-    el_recorder.echo_cancel = False
+    el_recorder.echo_cancel = True
 
     # 再生音をnumpy配列に読み込む
-    with wave.open(play_filename, 'rb') as iw:
-        wave_bytes = iw.readframes(iw.getnframes())
-        play_audio_f32:np.ndarray = np.frombuffer(wave_bytes, dtype=np.int16).astype(np.float32)/32768.0
-        # 16kHzにリサンプリング（必要ならば）
-        if iw.getframerate() != RATE:
-            play_audio_f32 = resample(play_audio_f32, int(len(play_audio_f32) * RATE / iw.getframerate()))
-
-    play_audio_f32 = sin_signal( freq=220, duration=3.0, vol=0.5 )
+    play_audio_f32:AudioF32 = load_wave( play_filename, sampling_rate=RATE )
+    # play_audio_f32 = sin_signal( freq=220, duration=3.0, vol=0.5 )
     
     el_recorder.add_play( play_audio_f32 )
 
-    print("録音と再生を開始します...")
-    el_recorder.start()
 
     filterd_audio_list = []
     raw_audio_list = []
     echo_audio_list = []
     # 指定した期間録音
+    print("録音と再生を開始します...")
+    el_recorder.start()
     while el_recorder.is_active() and el_recorder.is_playing():
         filtered_seg_f32, raw_seg_f32, echo_seg_f32 = el_recorder.get_audio()
         if len(filtered_seg_f32)>0:
             filterd_audio_list.append(filtered_seg_f32)
             raw_audio_list.append(raw_seg_f32)
             echo_audio_list.append(echo_seg_f32)
-        time.sleep( 1.0 )  # ミリ秒単位で指定
-
+        time.sleep( 1.5 )  # ミリ秒単位で指定
+    print("終了しました")
     el_recorder.stop()
 
     # 生の録音音声を保存
     raw_seg_f32 = np.concatenate( raw_audio_list )
-    save_wave(output_raw_filename, raw_seg_f32, RATE)
+    save_wave(output_raw_filename, raw_seg_f32, sampling_rate=RATE,ch=1)
     print(f"録音されたデータが {output_raw_filename} に保存されました。")
 
     # 再生音声を保存
     echo_audio_f32 = np.concatenate(echo_audio_list )
-    save_wave(output_echo_filename, echo_audio_f32, RATE)
+    save_wave(output_echo_filename, echo_audio_f32, sampling_rate=RATE,ch=1)
     print(f"再生データが {output_echo_filename} に保存されました。")
 
     # 引き算後の音声を保存
     filtered_audio_f32 = np.concatenate(filterd_audio_list )
-    save_wave(output_filtered_filename, filtered_audio_f32, RATE)
+    save_wave(output_filtered_filename, filtered_audio_f32, sampling_rate=RATE,ch=1)
     print(f"引き算されたデータが {output_filtered_filename} に保存されました。")
 
     ps:int = CHUNK_LEN*5

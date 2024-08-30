@@ -4,10 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.append(os.getcwd())
-from EchoLessRecorder.echo_less_recorder import AudioF32, sin_signal
+from BotVoice.echo_less_recorder import AudioF32, sin_signal
 
 def main():
-    data, seg_f32 = sin_signal( duration=1.0)
+    data, seg_f32 = sin_signal( freq=220, duration=1.0, vol=1.0 )
 
     plt.figure()
     plt.plot(data, label='Signal')
