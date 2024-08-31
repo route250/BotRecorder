@@ -15,31 +15,49 @@ from faster_whisper.transcribe import Segment
 sys.path.append(os.getcwd())
 
 from BotVoice.rec_util import AudioI8, AudioI16, AudioF32, EmptyF32, np_append, save_wave, load_wave, signal_ave, sin_signal
-from BotVoice.rec_util import f32_to_i8
+from BotVoice.rec_util import from_f32
 from BotVoice.bot_voice import BotVoice,RATE,CHUNK_SEC,CHUNK_LEN
 
 def main():
 
-    model_size = "large-v3"
     model_size = "tiny" # 39M
     model_size = "base" # 74M
-    model_size = "small" # 244M
-    model_size = "medium" # 769M
-    model_size = "large" # 1550M
+    # model_size = "small" # 244M
+    # model_size = "medium" # 769M
+    # model_size = "large" # 1550M
+    # model_size = "large-v3"
+
     # Run on GPU with FP16
-    #model = WhisperModel(model_size, device="gpu", compute_type="float16")
+    # model = WhisperModel(model_size, device="gpu", compute_type="float16")
     # or run on GPU with INT8
     # model = WhisperModel(model_size, device="cuda", compute_type="int8_float16")
     # or run on CPU with INT8
     # model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    model = WhisperModel(model_size, device="auto", cpu_threads=8, compute_type="int8")
 
-    bot_voice:BotVoice = BotVoice()
+    Dev = "cpu"
+    Typ = np.int8
+    if Typ == np.float32:
+        ctyp="float32"
+        threshold = 0.2
+    elif Typ == np.float16:
+        ctyp="float16"
+        threshold = 0.2
+    elif Typ == np.int16:
+        ctyp="int16"
+        threshold = int(32767)*0.2
+    elif Typ == np.int8:
+        ctyp="int8"
+        threshold = int(127)*0.2
+    else:
+        raise ValueError(f"invalid data type {Typ}")
 
-    threshold:int = 10
-    audio_i8:AudioI8 = np.zeros( RATE*3, dtype=np.int8 )
-    print("チェック")
-    model.transcribe(audio_i8, language='ja', beam_size=5)
+    print(f"Load model {model_size} {Dev} {ctyp}")
+    model = WhisperModel(model_size, device=Dev, compute_type=ctyp)
+    print(f"load done")
+
+    audio_np:np.ndarray = np.zeros( RATE*3, dtype=Typ )
+    print("Check model")
+    model.transcribe(audio_np, language='ja', beam_size=5)
 
     text_list:list[str] = []
     delta_sec:float = 0.6
@@ -48,27 +66,33 @@ def main():
     start_time:float = time.time()
     stop_time:float = start_time + 180.0
     lll=0.0
+    bot_voice:BotVoice = BotVoice()
     bot_voice.start()
     while bot_voice.is_active():
         now:float = time.time()
         if stop_time<=now:
             print("stop by time")
             break
-        raw_seg_f32 = bot_voice.get_audio()
-        if len(raw_seg_f32)<=0:
+        seg_f32 = bot_voice.get_audio()
+        if len(seg_f32)<=0:
             time.sleep(0.2)
             continue
-        lll=time.time()
-        a_i8:AudioI8 = f32_to_i8(raw_seg_f32)
-        audio_i8 = np.concatenate( (audio_i8,a_i8) )
-        audio_sec:float = round( len(audio_i8)/RATE, 2 )
-        audio_max:int = audio_i8.max()
+
+        seg_np:np.ndarray = from_f32(seg_f32,dtype=Typ)
+        audio_np = np.concatenate( (audio_np,seg_np) )
+        audio_sec:float = round( len(audio_np)/RATE, 2 )
+        audio_max:int = audio_np.max()
+
+        print()
+        transcribe_time:float = 0.0
         seg_list:list[Segment] = []
         if audio_max>threshold:
-            segments, info = model.transcribe(audio_i8, language='ja', beam_size=5)
+            st = time.time()
+            segments, info = model.transcribe(audio_np, language='ja', beam_size=5)
             for seg in segments:
                 if 'ご視聴ありがとう' not in seg.text:
                     seg_list.append(seg)
+            transcribe_time = time.time()-st
 
         split_sec:float
         if len(seg_list)>0:
@@ -93,10 +117,9 @@ def main():
             split_sec = max(0,audio_sec - delta_sec)
 
         split_idx = int( split_sec*RATE )
-        print(f"#Audio len:{audio_sec:.3f}s,{len(audio_i8)} split:{split_sec:.3f}s,{split_idx}")
-        print()
+        print(f"#Audio {transcribe_time:.3f}s len:{audio_sec:.3f}s,{len(audio_np)} split:{split_sec:.3f}s,{split_idx}")
         if split_idx>0:
-            audio_i8 = audio_i8[split_idx:]
+            audio_np = audio_np[split_idx:]
         #time.sleep( .2 )
     print("終了しました")
     bot_voice.stop()

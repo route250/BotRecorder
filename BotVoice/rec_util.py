@@ -23,14 +23,33 @@ def np_append( buf:AudioF32, x:AudioF32 ):
     else:
         buf[:-n] = buf[n:]
         buf[-n:] = x
+
 def is_f32(data:np.ndarray) ->bool:
     return isinstance(data,np.ndarray) and data.dtype==np.float32
+
+def from_f32( data:AudioF32, *, dtype ):
+    if is_f32(data):
+        if dtype == np.int8:
+            return (data*126).astype(np.int8)
+        elif dtype == np.int16:
+            return (data*32767).astype(np.int16)
+        elif dtype == np.float16:
+            return data.astype(np.float16)
+        elif dtype == np.float32:
+            return data
+    return np.zeros(0,dtype=dtype)
 
 def f32_to_i8( data:AudioF32 ) -> AudioI8:
     if is_f32(data):
         return (data*126).astype(np.int8)
     else:
         return np.zeros(0,dtype=np.int8)
+
+def f32_to_i16( data:AudioF32 ) -> AudioI16:
+    if is_f32(data):
+        return (data*126).astype(np.int16)
+    else:
+        return np.zeros(0,dtype=np.int16)
 
 # WAVファイルとして保存
 def save_wave(filename:str, data:AudioF32, *, sampling_rate:int, ch:int):
