@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 sys.path.append(os.getcwd())
 
 from BotVoice.rec_util import AudioF32, EmptyF32, np_append, save_wave, load_wave, signal_ave, sin_signal
-from BotVoice.bot_voice import BotVoice,RATE,CHUNK_LEN
+from BotVoice.bot_audio import BotAudio,RATE,CHUNK_LEN
 
 
 
@@ -16,7 +16,7 @@ def main():
     play_filename = 'test/testData/ttsmaker-file-2024-8-27-20-36-50.wav'
     output_raw_filename = 'tmp/raw_audio.wav'
 
-    bot_voice:BotVoice = BotVoice()
+    bot_voice:BotAudio = BotAudio()
 
     # 再生音をnumpy配列に読み込む
     play_audio_f32:AudioF32 = load_wave( play_filename, sampling_rate=RATE )

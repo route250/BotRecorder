@@ -20,7 +20,7 @@ CHUNK_LEN:int = int(RATE*CHUNK_SEC)
 
 import numpy as np
 
-class BotVoice:
+class BotAudio:
 
     def __init__(self):
         # Lock
@@ -29,7 +29,7 @@ class BotVoice:
         self._paudio:pyaudio.PyAudio|None = pyaudio.PyAudio()
         self._stream:Stream|None = None
         # 録音設定
-        self._rec_boost:float = 3.0
+        self._rec_boost:float = 5
         # 再生用
         self._play_byffer_list:list[AudioF32] = []
         self._play_buffer:AudioF32|None = None
@@ -152,6 +152,9 @@ class BotVoice:
         # 録音データ
         raw_f32:AudioF32 = np.concatenate(rec_buf)
         if 0.0<self._rec_boost<=10.0:
+            maxlv:float = max(raw_f32)
+            if maxlv*self._rec_boost>0.99:
+                self._rec_boost = 0.99/maxlv
             raw_f32 = raw_f32 * self._rec_boost
 
         return raw_f32

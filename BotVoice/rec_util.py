@@ -12,6 +12,26 @@ AudioI8 = NDArray[np.int8]
 # 定数
 EmptyF32:AudioF32 = np.zeros(0,dtype=np.float32)
 
+def as_str( value, default:str='') ->str:
+    if isinstance(value,str):
+        return value
+    return default
+
+def as_list( value, default:list=[]) ->list:
+    if isinstance(value,list):
+        return value
+    return default
+
+def as_int( value, default:int=0) ->int:
+    if isinstance(value,int|float):
+        return int(value)
+    return default
+
+def as_float( value, default:float=0) ->float:
+    if isinstance(value,int|float):
+        return float(value)
+    return default
+
 def np_shiftL( a:np.ndarray, n:int=1 ):
     if 0<n and n<len(a)-1:
         a[:-n] = a[n:]

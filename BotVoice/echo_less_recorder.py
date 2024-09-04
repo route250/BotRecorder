@@ -8,8 +8,8 @@ import wave
 import numpy as np
 
 import matplotlib.pyplot as plt
-
-from .rec_util import AudioF32, np_append, save_wave, load_wave, signal_ave, sin_signal
+sys.path.append(os.getcwd())
+from BotVoice.rec_util import AudioF32, np_append, save_wave, load_wave, signal_ave, sin_signal
 
 # 録音/再生の設定
 PA_FORMAT = pyaudio.paFloat32
