@@ -7,9 +7,6 @@ from typing import Iterable, TypedDict
 import numpy as np
 import pyaudio
 
-import matplotlib.pyplot as plt
-import torch
-
 from BotVoice.rec_util import AudioI8, AudioI16, AudioF32, EmptyF32, np_append, save_wave, load_wave, signal_ave, sin_signal
 from BotVoice.rec_util import from_f32
 from BotVoice.rec_util import as_str, as_list, as_int, as_float

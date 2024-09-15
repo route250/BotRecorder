@@ -68,7 +68,7 @@ def f32_to_i8( data:AudioF32 ) -> AudioI8:
 
 def f32_to_i16( data:AudioF32 ) -> AudioI16:
     if is_f32(data):
-        return (data*126).astype(np.int16)
+        return (data*32767).astype(np.int16)
     else:
         return np.zeros(0,dtype=np.int16)
 
