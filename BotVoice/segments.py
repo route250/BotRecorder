@@ -82,6 +82,18 @@ class Segment(NamedTuple):
     no_speech_prob: float
     words: Optional[List[Word]]
 
+    def get_word_start(self) ->float:
+        if self.words and len(self.words)>0:
+            return self.words[0].start
+        else:
+            return self.start
+
+    def get_word_end(self) ->float:
+        if self.words and len(self.words)>0:
+            return self.words[-1].end
+        else:
+            return self.end
+
 def as_segment( data ) ->Segment:
     return Segment(
         id = as_int(data.get('id')),
@@ -97,14 +109,99 @@ def as_segment( data ) ->Segment:
         words = [ as_word(w) for w in as_list(data.get('words')) ]
     )
 
+def get_gap( a:Segment, b:Segment ) ->float:
+    return b.get_word_start() - a.get_word_end()
+
+def join_segment( a:Segment, b:Segment, gap:float ) ->Segment|None:
+    dist:float = get_gap(a,b)
+    if dist<0.0 or gap<dist:
+        return None
+    words:Optional[List[Word]] = None
+    if a.words or b.words:
+        words = ( a.words or [] ) + ( b.words or [] )
+    return Segment(
+        id = a.id,
+        seek = a.seek,
+        start = a.start,
+        end = b.end,
+        text = a.text + b.text,
+        tokens = a.tokens + b.tokens,
+        temperature=a.temperature,
+        avg_logprob=(a.avg_logprob+b.avg_logprob)*0.5,
+        compression_ratio=max(a.compression_ratio,b.compression_ratio),
+        no_speech_prob=max(a.no_speech_prob,b.no_speech_prob),
+        words=words
+    )
+
+def split_segment0( seg:Segment, gap:float ) ->tuple[Segment|None,Segment|None]:
+    if not seg.words:
+        return None,None
+    split:int = len(seg.words)
+    for i in range(1,len(seg.words)):
+        if seg.words[i].start-seg.words[i-1].end>=gap:
+            split = i
+            break
+    if split>=len(seg.words):
+        return None,None
+    a:Segment = Segment(
+        id=seg.id,
+        seek=seg.seek,
+        start=seg.start,
+        end=seg.words[split-1].end,
+        text=''.join( [w.word for w in seg.words[:split]]),
+        tokens=seg.tokens,
+        temperature=seg.temperature,
+        avg_logprob=seg.avg_logprob,
+        compression_ratio=seg.compression_ratio,
+        no_speech_prob=seg.no_speech_prob,
+        words=seg.words[:split]
+    )
+    b:Segment = Segment(
+        id=seg.id,
+        seek=seg.seek,
+        start=seg.words[split].start,
+        end=seg.end,
+        text=''.join( [w.word for w in seg.words[split:]]),
+        tokens=seg.tokens,
+        temperature=seg.temperature,
+        avg_logprob=seg.avg_logprob,
+        compression_ratio=seg.compression_ratio,
+        no_speech_prob=seg.no_speech_prob,
+        words=seg.words[split:]
+    )
+    return a,b
+
+def split_segment(seg:Segment,gap:float) ->list[Segment]:
+    res:list[Segment] = []
+    while True:
+        a,b = split_segment0(seg,gap)
+        if a and b:
+            res.append(a)
+            seg = b
+        else:
+            res.append(seg)
+            break
+    return res
+
+def merge_segment( seg_list:list[Segment],gap:float) ->list[Segment]:
+    res:list[Segment] = split_segment(seg_list[0],gap)
+    for seg in seg_list[1:]:
+        sub:list[Segment] = split_segment(seg,gap)
+        a = join_segment(res[-1],sub[0],gap)
+        if a:
+            res = res[:-1] + [a] + sub[1:]
+        else:
+            res.extend( sub )
+    return res
+
 class TranscribRes:
     def __init__(self,data:dict[str,str|list]):
         self.text:str = as_str(data.get('text'))
         seg_list = []
         for seg in as_list(data.get('segments')):
-            if is_accept(seg.get('text')):
+            if seg.get('no_speech_prob',1.0)<0.9 and is_accept(seg.get('text')):
                 seg_list.append( as_segment(seg) )
-        self.segments:list = seg_list
+        self.segments:list[Segment] = seg_list
         self.language:str = as_str(data.get('language'))
         self.transcribe_time:float = 0.0
 
@@ -121,13 +218,13 @@ class TranscribRes:
         text_list = []
         for idx,seg in enumerate(self.segments):
             if float(seg.end)<=split_sec:
-                print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] {seg.text}")
+                print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] {seg.no_speech_prob:.2f} {seg.text}")
                 if seg.words:
                     for iw,word in enumerate(seg.words):
                         print(f"  {idx:2d}-{iw:2d} [{word.start:.2f}-{word.end:.2f}] {word.word}")
                 text_list.append(seg.text)
             elif float(seg.start)<split_sec:
-                print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}]")
+                print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] {seg.no_speech_prob:.2f} ")
                 ww = []
                 if seg.words:
                     for iw,word in enumerate(seg.words):
@@ -144,4 +241,4 @@ class TranscribRes:
     def dump(self):
         print("# Segments")
         for s in self.segments:
-            print(f"[{s.start:.3f}-{s.end:.3f}]{s.text}")
+            print(f"[{s.start:.3f}-{s.end:.3f}] {s.no_speech_prob:.3f} {s.text}")

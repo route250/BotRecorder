@@ -27,7 +27,7 @@ class MlxVoice(VoiceBase):
 
     def transcrib(self, audio_np:AudioF32) ->TranscribRes:
         st = time.time()
-        transcribe_res = mlx_whisper.transcribe( audio_np,
+        transcribe_res = mlx_whisper.transcribe( audio_np,no_speech_threshold=0.4,
                             language='ja', word_timestamps=True,
                             fp16=False, path_or_hf_repo=self.model_size)
         seglist:TranscribRes = TranscribRes(transcribe_res)
@@ -50,17 +50,19 @@ def main():
 
     # model_size = 'mlx-community/whisper-small-mlx'
     # model_size = 'mlx-community/whisper-small-mlx-fp32'
-    # model_size = 'mlx-community/whisper-small-mlx-q4'
+    # model_size = 'mlx-community/whisper-small-mlx-q4' # 197M
     # model_size = 'mlx-community/whisper-small-mlx-8bit'
     # model_size = 'mlx-community/whisper-small-mlx-4bit'
 
-    # model_size = 'mlx-community/whisper-medium-mlx-fp32'
-    # model_size = 'mlx-community/whisper-medium-mlx-q4'
-    # model_size = 'mlx-community/whisper-medium-mlx-8bit'
+
+    # model_size = 'mlx-community/whisper-medium-mlx' # 1.5GB
+    # model_size = 'mlx-community/whisper-medium-mlx-fp32' # 3GB
+    # model_size = 'mlx-community/whisper-medium-mlx-q4' # 0.5GB
+    # model_size = 'mlx-community/whisper-medium-mlx-8bit' # 865M
 
     # model_size = 'mlx-community/whisper-large-v3-mlx'
 
-    model_size = 'mlx-community/whisper-base-mlx-fp32'
+    model_size = 'mlx-community/whisper-small-mlx-q4'
 
     bot:MlxVoice = MlxVoice( model=model_size )
     bot.testrun()
