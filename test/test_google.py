@@ -1,5 +1,6 @@
 import sys,os
 import time
+from datetime import datetime
 
 from threading import Thread, Lock
 import numpy as np
@@ -24,6 +25,7 @@ from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
 sys.path.append(os.getcwd())
 
+from BotVoice.utils import setup_openai_api, update_usage, usage_to_price, usage_to_dict, usage_to_str
 from BotVoice.rec_util import AudioI8, AudioI16, AudioF32, EmptyF32, f32_to_i16, np_append, save_wave, load_wave, signal_ave, sin_signal
 from BotVoice.rec_util import from_f32
 from BotVoice.segments import is_accept
@@ -253,31 +255,78 @@ class RecgIterator(Iterable[StreamingRecognizeResponse]):
                 yield response
             #print(f"\r{ERACE}",end="")
 
-Transcriptions_Text_path='recog.txt'
-def get_transcription_time() ->float:
+TRANSCRIPT_JSON_PATH='tmp/transcript.json'
+PROMPT_TEXT_PATH='tmp/prompt.txt'
+MEETING_MINUTES_TEXT_PATH='tmp/meeting_minutes.md'
+
+def get_dt() ->str:
+    # 現在の日時を取得し、指定したフォーマットで文字列に変換
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    return current_time
+
+def get_file_time(filepath:str) ->float:
     # ファイルの最終更新時刻を取得
     try:
-        return os.path.getmtime(Transcriptions_Text_path)
+        return os.path.getmtime(filepath)
     except:
         pass
     return 0.0
 
-def load_transcription():
+def load_json(filepath:str,default=None):
     """ファイルをロードして処理する関数"""
     try:
-        with open(Transcriptions_Text_path, 'r', encoding='utf-8') as file:
+        with open(filepath, 'r', encoding='utf-8') as file:
             data = json.load(file)
             return data
     except Exception as ex:
         print(ex)
-    return []
+    return default
 
-def save_transcription(data:list[dict]):
+def save_json(filepath:str,data):
     # ファイルにデータを書き込む
-    with open(Transcriptions_Text_path, "w", encoding="utf-8") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4) 
 
-def main1() -> None:
+def load_text(filepath:str,default:str|None=None) ->str:
+    """ファイルをロードして処理する関数"""
+    try:
+        with open(filepath, 'r', encoding='utf-8') as file:
+            data = file.read()
+            return data
+    except Exception as ex:
+        print(ex)
+    return default
+
+def save_text(filepath:str,data:str):
+    # ファイルにデータを書き込む
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(data)
+
+def get_transcription_time() ->float:
+    return get_file_time(TRANSCRIPT_JSON_PATH)
+
+def load_transcription() ->list[dict]:
+    return load_json(TRANSCRIPT_JSON_PATH,[])
+
+def save_transcription(data:list[dict]):
+    save_json(TRANSCRIPT_JSON_PATH, data)
+
+def get_prompt_time() ->float:
+    return get_file_time(PROMPT_TEXT_PATH)
+
+def load_prompt() ->str:
+    return load_text(PROMPT_TEXT_PATH,"")
+
+def get_meeting_minutes_time() ->float:
+    return get_file_time(MEETING_MINUTES_TEXT_PATH)
+
+def load_meeting_minutes() ->str:
+    return load_text(MEETING_MINUTES_TEXT_PATH, None)
+
+def save_meeting_minutes(data:str):
+    save_text(MEETING_MINUTES_TEXT_PATH, data)
+
+def main_transcription() -> None:
     """start bidirectional streaming from microphone input to speech API"""
 
     mic_stream:ResumableMicrophoneStream = ResumableMicrophoneStream(SAMPLE_RATE, REQ_CHUNK_LEN*1)
@@ -337,9 +386,12 @@ def main1() -> None:
             sys.stdout.write(ERACE)
             sys.stdout.write(str(corrected_time) + ": " + transcript + "\r")
 
-def main2():
+def main_llm():
 
     """ファイルの更新を監視し、更新があれば処理する関数"""
+
+    usage:CompletionUsage = CompletionUsage(completion_tokens=0,prompt_tokens=0,total_tokens=0)
+
     last_mtime = 0 # get_transcription_time()
     last_prompt_time = get_prompt_time()
     
@@ -357,10 +409,11 @@ def main2():
             continue
         prompt = load_prompt()
         print("\nstart llm\n")
+        now_dt:str = get_dt()
         aatxt:str = json.dumps(data,ensure_ascii=False)
         # OpenAI APIを使って議事録の要約を作成
         req_messages=[
-            {"role": "system", "content": f"You are an assistant who helps summarize meeting transcripts into concise minutes.\n\n{prompt}"},
+            {"role": "system", "content": f"current time is {now_dt}\nYou are an assistant who helps summarize meeting transcripts into concise minutes.\n\n{prompt}"},
             {"role": "user", "content": f"以下が会議内容:\n\n{aatxt}"}
         ]
         try:
@@ -370,63 +423,21 @@ def main2():
                     model='gpt-4o-mini',
                     temperature=0.7,
             )
+            update_usage(usage,response.usage)
             ch:Choice = response.choices[0]
             msg:ChatCompletionMessage = ch.message
             #print(msg.content)
+            content = f"{usage_to_str(usage)}"
             if msg.content:
-                save_mm(msg.content)
+                content += "\n\n" + msg.content
+            save_meeting_minutes(content)
         except Exception as e:
             print(f"エラーが発生しました: {e}")
             return None        
 
-meeting_minutes_file_path='meeting_minutes.md'
-
-def get_mm_time() ->float:
-    # ファイルの最終更新時刻を取得
-    try:
-        return os.path.getmtime(meeting_minutes_file_path)
-    except:
-        pass
-    return 0.0
-
-def load_mm():
-    """ファイルをロードして処理する関数"""
-    try:
-        with open(meeting_minutes_file_path, 'r', encoding='utf-8') as file:
-            data = file.read()
-            return data
-    except Exception as ex:
-        print(ex)
-    return None
-
-def save_mm(data:str):
-    # ファイルにデータを書き込む
-    with open(meeting_minutes_file_path, "w", encoding="utf-8") as f:
-        f.write(data)
-
-prompt_path='prompt.txt'
-
-def get_prompt_time() ->float:
-    # ファイルの最終更新時刻を取得
-    try:
-        return os.path.getmtime(prompt_path)
-    except:
-        pass
-    return 0.0
-
-def load_prompt() ->str:
-    """ファイルをロードして処理する関数"""
-    try:
-        with open(prompt_path, 'r', encoding='utf-8') as file:
-            data = file.read()
-            return data
-    except Exception as ex:
-        print(ex)
-    return "以下の議事録を要約してください:"
-
 def main():
-    th1 = Thread( name='recog', target=main1 )
-    th2 = Thread( name='llm', target=main2 )
+    th1 = Thread( name='recog', target=main_transcription )
+    th2 = Thread( name='llm', target=main_llm )
     
     threads = (th1,th2)
     for t in threads:
@@ -435,7 +446,8 @@ def main():
         t.join()
 
 if __name__ == "__main__":
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS']='/home/maeda/LLM/BotRecorder/hidden-chiller-434114-t2-4d39fc610ee8.json'
+    setup_openai_api()
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS']='hidden-chiller-434114-t2-4d39fc610ee8.json'
     main()
 
 # [END speech_transcribe_infinite_streaming]
