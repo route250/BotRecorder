@@ -12,7 +12,7 @@ import sounddevice as sd
 
 sys.path.append(os.getcwd())
 from BotVoice.rec_util import AudioI16, AudioF32, EmptyF32, np_append, save_wave, load_wave, signal_ave, sin_signal
-from BotVoice.rec_util import f32_to_i16, i16_to_f32, generate_mixed_tone, audio_info
+from BotVoice.rec_util import f32_to_i16, i16_to_f32, to_f32, resample, generate_mixed_tone, audio_info
 
 def maek_marker_tone( size:int, sample_rate:int,freq1:int,freq2:int, vol:float=0.9):
     tone_sec = size/2/sample_rate
@@ -44,6 +44,7 @@ def lms_echo_cancel(mic: np.ndarray, spk: np.ndarray, mu: float, w: np.ndarray, 
     if len(mic) != len(spk):
         raise TypeError()
     
+    AEC_PLIMIT:float = 1.2
     mic_len = len(mic)
     num_taps = len(w)
 
@@ -51,6 +52,10 @@ def lms_echo_cancel(mic: np.ndarray, spk: np.ndarray, mu: float, w: np.ndarray, 
 
     # エコーキャンセル後の信号を保存する配列
     cancelled_signal = np.zeros(mic_len,dtype=np.float32)
+
+    maxlv = np.sum(np.abs(w))
+    if maxlv>AEC_PLIMIT:
+        w *= (AEC_PLIMIT/maxlv)
 
     # LMSアルゴリズムのメインループ
     for n in range(mic_len):
@@ -64,17 +69,26 @@ def lms_echo_cancel(mic: np.ndarray, spk: np.ndarray, mu: float, w: np.ndarray, 
             
             # スピーカー出力 spk_slice とフィルタ係数 w の内積によるフィルタ出力 y(n) を計算
             y = np.dot(w, spk_slice)
+            if np.isnan(y) or np.isinf(y):
+                print("[ERR] t is NaN or INF")
+                cancelled_signal[n] = mic[n]
+                continue
             
             # エラー e(n) を計算 (マイク信号 mic[n] とフィルタ出力 y の差)
             e = mic[n] - y
 
             # エコーキャンセル後の信号を計算 (マイク信号から予測されたエコーを引く)
-            cancelled_signal[n] = e
+            cancelled_signal[n] = np.clip(e, -1.0, 1.0 )
             
             # フィルタ係数の更新式
             zr:float = np.count_nonzero(spk_slice)/len(spk_slice)
             if zr>0.9:
                 w[:] = w + mu * e * spk_slice
+                maxlv = np.sum(np.abs(w))
+                if maxlv>AEC_PLIMIT:
+                    w *= (AEC_PLIMIT/maxlv)
+                # if np.max(np.abs(w))>1e+30:
+                #     print("[WARN] w is too large")
 
     return cancelled_signal
 
@@ -175,6 +189,7 @@ class AecRecorder:
         self._post_play_num:int = 0
 
         # 録音データ
+        self.mic_boost:float = 5.0
         self.mic_buffer:list[AudioI16] = []
         self.echo_buffer:list[AudioF32] = []
 
@@ -193,10 +208,17 @@ class AecRecorder:
         self.delay_factor:float = 0.0
 
         # エコーキャンセルフィルター
-        self.aec_mu = 0.02  # 学習率
+        self.aec_mu = 0.05  # 学習率
         self.aec_taps = 1500 # フィルターの長さ
         self.aec_offset = -200 # 先頭がよくずれるので余裕を
-        self.aec_w = np.zeros(self.aec_taps,dtype=np.float32)
+        peek = max(self.aec_taps, self.aec_taps + self.aec_offset)
+        if peek<self.aec_taps:
+            w1= np.linspace(0.0,1.0,peek,dtype=np.float32)
+            w2= np.linspace(1.0,0.0,self.aec_taps-peek,dtype=np.float32)
+            self.aec_w = np.concatenate( (w1,w2))
+        else:
+            self.aec_w = np.linspace(0.0,1.0,self.aec_taps,dtype=np.float32)
+        self.aec_plimit:float = 1.2
 
 
     def start(self):
@@ -215,10 +237,16 @@ class AecRecorder:
         if self.stream:
             self.stream.stop(ignore_errors=True)
 
-    def play(self, audio_f32:AudioF32|None ):
+    def play(self, audio:AudioF32|None, sr:int|None=None ):
         """再生データを設定し、再生を開始"""
         print("play ",end="")
-        if audio_f32 is not None:
+        audio_f32:AudioF32 = to_f32(audio)
+        if audio_f32 is not None and len(audio_f32)>0:
+            if isinstance(sr,int|float) and sr>0:
+                audio_f32 = resample(audio_f32,orig=sr,target=self.sample_rate)
+            max_lv = np.max(np.abs(audio_f32))
+            if max_lv>0.3:
+                audio_f32 *= (0.3/max_lv)
             padding_f32:AudioF32 = np.zeros( self.ds_chunk_size, dtype=np.float32 )
             play_f32:AudioF32 = np.concatenate( (audio_f32,padding_f32) )
             play_i16:AudioI16 = f32_to_i16(play_f32)
@@ -340,6 +368,13 @@ class AecRecorder:
         if len(mics)==0:
             return EmptyF32, EmptyF32
         mic_f32:AudioF32 = i16_to_f32( np.concatenate( mics ) )
+
+        mic_max:float = np.max(np.abs(mic_f32))
+        mic_lv:float = mic_max * self.mic_boost
+        if mic_lv>0.9:
+            self.mic_boost = (0.9/mic_max) * self.mic_boost
+        mic_f32 *= self.mic_boost
+
         spk_f32:AudioF32 = np.concatenate( spks )
         offset = self.ds_chunk_size - offset
         spk_f32 = spk_f32[offset:offset+len(mic_f32)]

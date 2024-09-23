@@ -3,7 +3,7 @@ from typing import TypeVar
 import wave
 import numpy as np
 from numpy.typing import NDArray
-from scipy.signal import resample
+from scipy.signal import resample as scipy_resample
 
 # 型エイリアス
 AudioF32 = NDArray[np.float32]
@@ -72,6 +72,13 @@ def from_f32( data:AudioF32, *, dtype ):
             return data
     return np.zeros(0,dtype=dtype)
 
+def to_f32( data ) ->AudioF32:
+    if is_f32(data):
+        return data
+    if is_i16(data):
+        return i16_to_f32(data)
+    return np.zeros(0,dtype=np.float32)
+
 def f32_to_i8( data:AudioF32 ) -> AudioI8:
     if is_f32(data):
         return (data*126).astype(np.int8)
@@ -89,6 +96,14 @@ def i16_to_f32( data:AudioI16 ) -> AudioF32:
         return data.astype(np.float32)/32767.0
     else:
         return np.zeros(0,dtype=np.float32)
+
+def resample( audio_f32:AudioF32, orig:int, target:int ):
+    if orig == target:
+        return audio_f32
+    x = scipy_resample(audio_f32, int(len(audio_f32) * target / orig ))
+    if not isinstance(x,np.ndarray):
+        raise wave.Error("リサンプリングエラー")
+    return x
 
 # WAVファイルとして保存
 def save_wave(filename:str, data:AudioF32, *, sampling_rate:int, ch:int):
@@ -113,11 +128,7 @@ def load_wave(filename, *, sampling_rate:int) ->AudioF32:
         audio_f32:AudioF32 = audio_i16.astype(np.float32)/32768.0
         # リサンプリング（必要ならば）
         if iw.getframerate() != sampling_rate:
-            x = resample(audio_f32, int(len(audio_f32) * sampling_rate / iw.getframerate()))
-            if isinstance(x,np.ndarray):
-                audio_f32 = x
-            else:
-                raise wave.Error("リサンプリングエラー")
+            audio_f32 = resample( audio_f32, iw.getframerate(), sampling_rate )
     return audio_f32
 
 def signal_ave( signal:AudioF32 ) ->float:
