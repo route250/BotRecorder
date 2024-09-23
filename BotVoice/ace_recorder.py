@@ -44,7 +44,6 @@ def lms_echo_cancel(mic: np.ndarray, spk: np.ndarray, mu: float, w: np.ndarray, 
     if len(mic) != len(spk):
         raise TypeError()
     
-    AEC_PLIMIT:float = 1.2
     mic_len = len(mic)
     num_taps = len(w)
 
@@ -53,8 +52,10 @@ def lms_echo_cancel(mic: np.ndarray, spk: np.ndarray, mu: float, w: np.ndarray, 
     # エコーキャンセル後の信号を保存する配列
     cancelled_signal = np.zeros(mic_len,dtype=np.float32)
 
+    AEC_PLIMIT:float = 1.0
     maxlv = np.sum(np.abs(w))
     if maxlv>AEC_PLIMIT:
+        print(f"[WARN] w is too large {maxlv}")
         w *= (AEC_PLIMIT/maxlv)
 
     # LMSアルゴリズムのメインループ
@@ -73,6 +74,11 @@ def lms_echo_cancel(mic: np.ndarray, spk: np.ndarray, mu: float, w: np.ndarray, 
                 print("[ERR] t is NaN or INF")
                 cancelled_signal[n] = mic[n]
                 continue
+            abs_y = np.abs(y)
+            if abs_y>1:
+                # print(f"[WARN] abs_y is over? {abs_y}")
+                w *= 0.9
+                y *= 0.9
             
             # エラー e(n) を計算 (マイク信号 mic[n] とフィルタ出力 y の差)
             e = mic[n] - y
@@ -86,10 +92,8 @@ def lms_echo_cancel(mic: np.ndarray, spk: np.ndarray, mu: float, w: np.ndarray, 
                 w[:] = w + mu * e * spk_slice
                 maxlv = np.sum(np.abs(w))
                 if maxlv>AEC_PLIMIT:
+                    # print(f"[WARN] w is too large {maxlv}")
                     w *= (AEC_PLIMIT/maxlv)
-                # if np.max(np.abs(w))>1e+30:
-                #     print("[WARN] w is too large")
-
     return cancelled_signal
 
 
@@ -189,13 +193,14 @@ class AecRecorder:
         self._post_play_num:int = 0
 
         # 録音データ
-        self.mic_boost:float = 5.0
+        self.mic_boost:float = 1.0
         self.mic_buffer:list[AudioI16] = []
         self.echo_buffer:list[AudioF32] = []
 
         # 先頭マーカー検出
-        tone1:AudioF32 = maek_marker_tone( self.ds_chunk_size, sample_rate, AecRecorder.H1, AecRecorder.H2 )
-        self.marker_tone_f32:AudioF32 = tone1 * 0.3
+        self._marker_lv:float = 0.4
+        tone1:AudioF32 = maek_marker_tone( self.ds_chunk_size, sample_rate, AecRecorder.H1, AecRecorder.H2, vol=self._marker_lv )
+        self.marker_tone_f32:AudioF32 = tone1
         self.marker_tone_I16:AudioI16 = f32_to_i16( self.marker_tone_f32 )
         self.marker_bytes:bytes = f32_to_i16( tone1 ).tobytes()
         self.marker_pair:SpkPair = SpkPair( self.marker_tone_f32, self.marker_tone_I16 )
@@ -208,16 +213,20 @@ class AecRecorder:
         self.delay_factor:float = 0.0
 
         # エコーキャンセルフィルター
-        self.aec_mu = 0.05  # 学習率
+        self.aec_mu = 0.1  # 学習率
         self.aec_taps = 1500 # フィルターの長さ
         self.aec_offset = -200 # 先頭がよくずれるので余裕を
-        peek = max(self.aec_taps, self.aec_taps + self.aec_offset)
+        peek = max(self.aec_taps, self.aec_taps + self.aec_offset)-2
         if peek<self.aec_taps:
-            w1= np.linspace(0.0,1.0,peek,dtype=np.float32)
-            w2= np.linspace(1.0,0.0,self.aec_taps-peek,dtype=np.float32)
+            w1= np.linspace(0.0,0.5,peek,dtype=np.float32)
+            w2= np.linspace(0.2,0.0,self.aec_taps-peek,dtype=np.float32)
             self.aec_w = np.concatenate( (w1,w2))
         else:
-            self.aec_w = np.linspace(0.0,1.0,self.aec_taps,dtype=np.float32)
+            self.aec_w = np.linspace(0.0,0.5,self.aec_taps,dtype=np.float32)
+        AEC_PLIMIT:float = 1.0
+        maxlv = np.sum(np.abs(self.aec_w))
+        if maxlv>AEC_PLIMIT:
+            self.aec_w *= (AEC_PLIMIT/maxlv)
         self.aec_plimit:float = 1.2
 
 
@@ -272,8 +281,12 @@ class AecRecorder:
                         self._detectbuf += mic_data.tobytes()
                         pos,factor = audioop.findfit( self._detectbuf, self.marker_bytes ) if self._detect_cnt>2 else (0,0.0)
                         if self._detect_cnt>5 and 0<=pos and pos==self._before_pos:
+                            tmp = self._detectbuf[pos*2:pos*2+self.ds_chunk_size]
+                            lo,hi = audioop.minmax( tmp, 2 )
+                            maxlv = (abs(lo)+abs(hi))/2/32768
+                            self.mic_boost = self._marker_lv/maxlv
                             delay:int = pos + self.ds_chunk_size
-                            print(f"[SND]delay: pos:{pos} OK {delay}")
+                            print(f"[SND]delay: pos:{pos} OK {delay} factor:{factor} maxlv:{maxlv} boost:{self.mic_boost}")
                             self.delay_samples = delay
                             self.delay_factor = factor
                             self._detect_cnt=-1

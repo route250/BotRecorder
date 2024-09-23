@@ -74,11 +74,12 @@ def main_get():
 
     print("---")
     print(f"[OUT] mic {audio_info(mic_f32,sample_rate=sample_rate)}")
-    print(f"[OUT] spk {audio_info(spk_f32,sample_rate=sample_rate)}")
-
     save_wave( 'tmp/mic_output.wav', mic_f32, sampling_rate=sample_rate, ch=1)
+
+    print(f"[OUT] spk {audio_info(spk_f32,sample_rate=sample_rate)}")
     save_wave( 'tmp/spk_output.wav', spk_f32, sampling_rate=sample_rate, ch=1)
 
+    print(f"[OUT] lms {audio_info(lms_f32,sample_rate=sample_rate)}")
     save_wave( 'tmp/lms_output.wav', lms_f32, sampling_rate=sample_rate, ch=1)
 
     plt.figure()
