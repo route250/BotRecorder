@@ -12,6 +12,15 @@ AudioI16 = NDArray[np.int16]
 AudioI8 = NDArray[np.int8]
 # 定数
 EmptyF32:AudioF32 = np.zeros(0,dtype=np.float32)
+EmptyI16:AudioI16 = np.zeros(0,dtype=np.int16)
+
+def audio_info( audio:AudioF32, sample_rate:int ) ->str:
+    size:int = len(audio)
+    sec:float = size/sample_rate
+    lo:float = min(audio)
+    hi:float = max(audio)
+    ave:float = signal_ave(audio)
+    return f"[fr:{size},sec:{sec:.3f},lo:{lo:.2f},hi:{hi:.2f},ave:{ave:.2f}]"
 
 def as_str( value, default:str='') ->str:
     if isinstance(value,str):
@@ -48,6 +57,9 @@ def np_append( buf:AudioF32, x:AudioF32 ):
 def is_f32(data:np.ndarray) ->bool:
     return isinstance(data,np.ndarray) and data.dtype==np.float32
 
+def is_i16(data:np.ndarray) ->bool:
+    return isinstance(data,np.ndarray) and data.dtype==np.int16
+
 def from_f32( data:AudioF32, *, dtype ):
     if is_f32(data):
         if dtype == np.int8:
@@ -71,6 +83,12 @@ def f32_to_i16( data:AudioF32 ) -> AudioI16:
         return (data*32767).astype(np.int16)
     else:
         return np.zeros(0,dtype=np.int16)
+
+def i16_to_f32( data:AudioI16 ) -> AudioF32:
+    if is_i16(data):
+        return data.astype(np.float32)/32767.0
+    else:
+        return np.zeros(0,dtype=np.float32)
 
 # WAVファイルとして保存
 def save_wave(filename:str, data:AudioF32, *, sampling_rate:int, ch:int):
@@ -139,3 +157,44 @@ def sin_signal( *, freq:int=220, duration:float=3.0, vol:float=0.5,sample_rate:i
     #result:AudioF32 = np.repeat( signal_f32, n )[:data_len]
     #print(f"result len{len(result)} {data_len} {chunk_len}x{n}")
     return audio_f32
+
+
+def generate_mixed_tone( duration_sec: float, tone_hz1: int, tone_hz2: int, sample_rate: int, vol: float = 0.3) -> np.ndarray:
+    """
+    2つの周波数のトーンをエネルギー比50:50で混ぜ合わせ、音声データ全体にわたって同じ音を生成する関数。
+
+    Args:
+        tone_hz1 (int): 第一のトーンの周波数（Hz）。
+        tone_hz2 (int): 第二のトーンの周波数（Hz）。
+        duration_sec (float): 音声データの全体の長さ（秒）。
+        sample_rate (int): サンプリングレート（Hz）。
+        vol (float, optional): 総合振幅。デフォルトは0.3。
+
+    Returns:
+        np.ndarray: 生成された音声データ（float32）。
+    """
+    # 全体のサンプル数を計算
+    total_samples = int(duration_sec * sample_rate)
+    t = np.linspace(0, duration_sec, total_samples, endpoint=False)
+
+    # 各トーンの振幅を調整（エネルギー比50:50）
+    # エネルギー E = (A^2)/2 + (B^2)/2 = vol^2 / 2 + vol^2 / 2 = vol^2
+    # 各トーンの振幅は vol / sqrt(2) に設定
+    amplitude = vol / np.sqrt(2)
+
+    # 各トーンを生成
+    tone1 = amplitude * np.sin(2 * np.pi * tone_hz1 * t)
+    tone2 = amplitude * np.sin(2 * np.pi * tone_hz2 * t)
+
+    # トーンを混合
+    mixed_tone = tone1 + tone2
+
+    # ノーマライズ
+    hi:float = max(abs(mixed_tone))
+    rate:float = vol / hi
+    mixed_tone *= rate
+
+    # データ型をfloat32に変換
+    audio = mixed_tone.astype(np.float32)
+
+    return audio
