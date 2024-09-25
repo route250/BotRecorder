@@ -38,7 +38,7 @@ def main_get():
     lms_f32:AudioF32 = mic_f32
     spk_f32:AudioF32 = mic_f32
 
-    _,_ = recorder.get_audio()
+    _,_ = recorder.get_raw_audio()
     recorder.play_marker()
     recorder.play(playback_data7)
     if mode==1:
@@ -59,8 +59,8 @@ def main_get():
             time.sleep(0.5)
         # 停止
         recorder.stop()
-        mic_f32, spk_f32 = recorder.copy_audio()
-        x_mic_f32, x_spk_f32 = recorder.get_audio()
+        mic_f32, spk_f32 = recorder.copy_raw_audio()
+        x_mic_f32, x_spk_f32 = recorder.get_raw_audio()
         if not np.array_equal(x_mic_f32,mic_f32):
             print(f"ERROR: mic is invalid")
             return

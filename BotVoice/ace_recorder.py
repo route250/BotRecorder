@@ -370,7 +370,7 @@ class AecRecorder:
         self.ds_chunk_size = pa_chunk_size
         self.sample_rate = sample_rate
         #
-        self.stream = None
+        self._stream = None
         self._callback_cnt:int = 0
 
         #
@@ -380,7 +380,7 @@ class AecRecorder:
         # 再生データ
         self.play_data:list[SpkPair] = []
         self.play_pos:int = 0
-        self.is_playing = False
+        self._is_playing = False
         self._post_play_count:int = 0
         self._post_play_num:int = 0
 
@@ -402,7 +402,6 @@ class AecRecorder:
         self._detect_num:int = int( 2 * self.sample_rate / self.ds_chunk_size )
         self._before_pos:int = -1
         self.delay_samples:int = 0
-        self.delay_factor:float = 0.0
 
         # エコーキャンセルフィルター
         self.aec_mu = 0.2 # 学習率
@@ -421,22 +420,42 @@ class AecRecorder:
             self.aec_w *= (AEC_PLIMIT/maxlv)
         self.aec_plimit:float = 1.2
 
+    def is_playing(self) ->int:
+        with self._lock:
+            if self._is_playing:
+                return 1
+        return 0
+
+    def is_active(self) ->bool:
+        with self._lock:
+            if self._stream:
+                return self._stream.active
+            else:
+                print("not open?")
+                return False
+    
+    def is_stopped(self):
+        with self._lock:
+            if self._stream:
+                return self._stream.closed
+            else:
+                return True
 
     def start(self):
         """録音・再生を同時に開始"""
         print("start ",end="")
-        self.stream = sd.Stream( samplerate=self.sample_rate,
+        self._stream = sd.Stream( samplerate=self.sample_rate,
                                 blocksize=self.ds_chunk_size,
                                 device = self.device, channels=1, dtype=np.int16, callback=self._callback )
-        self.stream.start()
+        self._stream.start()
         print("----------")
         print("----------")
 
     def stop(self):
         """ストリームを停止"""
         print("stop ",end="")
-        if self.stream:
-            self.stream.stop(ignore_errors=True)
+        if self._stream:
+            self._stream.stop(ignore_errors=True)
 
     def play_marker(self):
         """再生データを設定し、再生を開始"""
@@ -445,7 +464,7 @@ class AecRecorder:
                 self.play_data.append( self.zeros_pair )
             self.play_data.append( self.marker_pair )
             self.play_data.append( self.zeros_pair )
-            self.is_playing = True
+            self._is_playing = True
 
     def play(self, audio:AudioF32|None, sr:int|None=None ):
         """再生データを設定し、再生を開始"""
@@ -465,7 +484,7 @@ class AecRecorder:
             data:list[SpkPair] = [ SpkPair(play_f32[s:s+step],play_i16[s:s+step]) for s in range(0,size,step) ]
             with self._lock:
                 self.play_data.extend( data )
-                self.is_playing = True
+                self._is_playing = True
 
     def _callback(self, inbytes:np.ndarray, outdata:np.ndarray, frames:int, time, status ) ->None:
         try:
@@ -486,7 +505,6 @@ class AecRecorder:
                             delay:int = pos + self.ds_chunk_size
                             print(f"[SND]delay: pos:{pos} OK {delay} factor:{factor} maxlv:{maxlv} boost:{self.mic_boost}")
                             self.delay_samples = delay
-                            self.delay_factor = factor
                             self._detect_cnt=-1
                             self._detectbuf=b''
                         else:
@@ -496,7 +514,6 @@ class AecRecorder:
                     else:
                         self._detect_cnt = -1
                         self.delay_samples = 0
-                        self.delay_factor = 0.0
                         self._detectbuf=b''
                         print(f"[SND]delay:NotFound")
 
@@ -514,7 +531,7 @@ class AecRecorder:
                     if self._post_play_count>0:
                         self._post_play_count-=1
                     else:
-                        self.is_playing = False
+                        self._is_playing = False
                     play = self.zeros_pair
                 self.echo_buffer.append( play.f32 )
 
@@ -524,30 +541,22 @@ class AecRecorder:
         finally:
             self._callback_cnt+=1
 
-    def raw_audio(self) ->tuple[AudioF32,AudioF32]:
+    def copy_raw_buffer(self) ->tuple[AudioF32,AudioF32]:
         with self._lock:
-            x:int = math.ceil( self.delay_samples/self.ds_chunk_size )
-            offset:int = self.delay_samples-x*self.ds_chunk_size
-            factor:float = self.delay_factor
             e:list[AudioF32]=self.echo_buffer.copy()
             m:list[AudioI16]=self.mic_buffer.copy()
-        print(f"[copy] offset {x},{offset} mic:{len(m)} spk:{len(e)}")
         mic_f32:AudioF32 = i16_to_f32( np.concatenate( m ) )
         echo_f32:AudioF32 = np.concatenate( e )
         return mic_f32,echo_f32
 
-    def copy_audio(self) ->tuple[AudioF32,AudioF32]:
+    def copy_raw_audio(self) ->tuple[AudioF32,AudioF32]:
         with self._lock:
             x:int = self.delay_samples//self.ds_chunk_size
             offset:int = self.delay_samples-x*self.ds_chunk_size
-            factor:float = self.delay_factor
-
             mics:list[AudioI16]=self.mic_buffer.copy()
-
             ee = len(self.echo_buffer) -x
             es = ee - len(mics)-1
             spks: list[AudioF32] = [self.zeros_f32 if l < 0 else self.echo_buffer[l] for l in range(es, ee)]
-
         print(f"[copy] offset {x},{offset} mic:{len(mics)} spk:{len(spks)}")
         mic_f32:AudioF32 = i16_to_f32( np.concatenate( mics ) )
         spk_f32:AudioF32 = np.concatenate( spks )
@@ -555,13 +564,12 @@ class AecRecorder:
         spk_f32 = spk_f32[offset:offset+len(mic_f32)]
         return mic_f32,spk_f32
 
-    def get_audio(self,keep:bool=False) ->tuple[AudioF32,AudioF32]:
+    def get_raw_audio(self,keep:bool=False) ->tuple[AudioF32,AudioF32]:
         with self._lock:
             if self._detect_cnt>=0:
                 return EmptyF32,EmptyF32
             x:int = self.delay_samples//self.ds_chunk_size
             offset:int = self.delay_samples-x*self.ds_chunk_size
-            factor:float = self.delay_factor
         
             if keep:
                 mics:list[AudioI16]=self.mic_buffer.copy()
@@ -592,13 +600,16 @@ class AecRecorder:
         return mic_f32,spk_f32
     
     def get_aec_audio(self) ->tuple[AudioF32,AudioF32,AudioF32]:
-        mic_f32, spk_f32 = self.get_audio()
+        mic_f32, spk_f32 = self.get_raw_audio()
         if len(mic_f32)==0:
             return mic_f32,mic_f32,mic_f32
         lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, self.aec_mu, self.aec_w, self.aec_offset )
         # lms_f32:AudioF32 = rls_echo_cancel( mic_f32, spk_f32, 0.98, 100, self.aec_w, self.aec_offset )
         return lms_f32, mic_f32, spk_f32
 
+    def get_audio(self) ->AudioF32:
+        lms_f32,_,_ = self.get_aec_audio()
+        return lms_f32
 
 def list_microphones():
     print( sd.query_devices() )
