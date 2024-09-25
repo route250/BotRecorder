@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, lms_echo_cancel
+from BotVoice.ace_recorder import AecRecorder, nlms_echo_cancel
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info
 
 #----------------------
@@ -39,6 +39,7 @@ def main_get():
     spk_f32:AudioF32 = mic_f32
 
     _,_ = recorder.get_audio()
+    recorder.play_marker()
     recorder.play(playback_data7)
     if mode==1:
         while True:
@@ -70,8 +71,11 @@ def main_get():
         num_taps = 1700
         offset = -200
         w = np.zeros(num_taps,dtype=np.float32)
-        lms_f32:AudioF32 = lms_echo_cancel( mic_f32, spk_f32*1.5, mu, w, offset )
+        lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32*1.5, mu, w, offset )
 
+        save_and_plot( mic_f32, spk_f32, lms_f32, sample_rate )
+
+def save_and_plot( mic_f32:AudioF32, spk_f32:AudioF32,lms_f32:AudioF32, sample_rate ):
     print("---")
     print(f"[OUT] mic {audio_info(mic_f32,sample_rate=sample_rate)}")
     save_wave( 'tmp/mic_output.wav', mic_f32, sampling_rate=sample_rate, ch=1)
@@ -96,7 +100,21 @@ def main_get():
 
     print("")
 
+def main_file():
+
+    pa_chunk_size = 3200
+    sample_rate:int = 16000
+
+    rec:AecRecorder = AecRecorder( device=None, pa_chunk_size=pa_chunk_size, sample_rate=sample_rate)
+
+    mic_f32:AudioF32 = load_wave('test/testData/aec_mic_input.wav', sampling_rate=16000)
+    spk_f32:AudioF32 = load_wave('test/testData/aec_spk_input.wav', sampling_rate=16000)
+
+    lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, rec.aec_mu, rec.aec_w, rec.aec_offset )
+    save_and_plot( mic_f32, spk_f32, lms_f32, sample_rate )
+
 if __name__ == "__main__":
     #main_tome()
     #main()
-    main_get()
+    # main_get()
+    main_file()

@@ -15,7 +15,7 @@ from style_bert_vits2.constants import Languages
 from style_bert_vits2.tts_model import TTSModel
 
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, lms_echo_cancel
+from BotVoice.ace_recorder import AecRecorder, nlms_echo_cancel
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info, sin_signal
 
 #----------------------
@@ -79,7 +79,7 @@ def main_get():
         num_taps = 1700
         offset = -200
         w = np.zeros(num_taps,dtype=np.float32)
-        lms_f32:AudioF32 = lms_echo_cancel( mic_f32, spk_f32*1.5, mu, w, offset )
+        lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32*1.5, mu, w, offset )
 
     print("---")
     print(f"[OUT] mic {audio_info(mic_f32,sample_rate=sample_rate)}")
@@ -203,8 +203,6 @@ def main_x():
     check_audio:AudioF32 = sin_signal()
     res = w_transcrib(check_audio, model_size)
 
-
-
     pa_chunk_size = 3200
     sample_rate:int = 16000
 
@@ -215,8 +213,9 @@ def main_x():
     spk_f32:AudioF32 = mic_f32
 
     recorder.start()
-
-    for g in greetings[:2]:
+    time.sleep(0.5)
+    recorder.play_marker()
+    for g in greetings[:4]:
         sr, audio_i16 = model.infer(text=g, style_weight=0.0 )
 
         print(g)
