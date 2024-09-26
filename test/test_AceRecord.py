@@ -67,19 +67,8 @@ def main_get():
             time.sleep(0.5)
         # 停止
         recorder.stop()
-        mic_f32, spk_f32 = recorder.copy_raw_audio()
-        x_mic_f32, x_spk_f32 = recorder.get_raw_audio()
-        if not np.array_equal(x_mic_f32,mic_f32):
-            print(f"ERROR: mic is invalid")
-            return
-        if not np.array_equal(x_spk_f32,spk_f32):
-            print(f"ERROR: spk is invalid")
-            return
-        mu = 0.01
-        num_taps = 1700
-        offset = -200
-        w = np.zeros(num_taps,dtype=np.float32)
-        lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32*1.5, mu, w, offset )
+        mic_f32, spk_f32 = recorder.get_raw_audio()
+        lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, recorder.aec_mu, recorder.aec_w )
 
     print("---")
     print(f"[OUT] mic {audio_info(mic_f32,sample_rate=sample_rate)}")
@@ -215,7 +204,7 @@ def main_x():
     recorder.start()
     time.sleep(0.5)
     recorder.play_marker()
-    for g in greetings[:4]:
+    for g in greetings[:2]:
         sr, audio_i16 = model.infer(text=g, style_weight=0.0 )
 
         print(g)
@@ -231,7 +220,7 @@ def main_x():
             mic_f32 = np.concatenate( (mic_f32,delta_mic_f32) )
             lms_f32 = np.concatenate( (lms_f32,delta_lms_f32) )
             spk_f32 = np.concatenate( (spk_f32,delta_spk_f32) )
-            if not recorder.is_playing:
+            if not recorder.is_playing():
                 break
 
     print("---whisper raw mic")
