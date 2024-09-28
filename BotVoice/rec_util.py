@@ -111,7 +111,10 @@ def save_wave(filename:str, data:AudioF32, *, sampling_rate:int, ch:int):
         wf.setnchannels(ch)
         wf.setsampwidth(2)
         wf.setframerate(sampling_rate)
-        wf.writeframes( (data*32767).astype(np.int16).tobytes())
+        if is_i16(data):
+            wf.writeframes(data.tobytes())
+        else:
+            wf.writeframes( (data*32767).astype(np.int16).tobytes())
 
 def load_wave(filename, *, sampling_rate:int) ->AudioF32:
     # 再生音をnumpy配列に読み込む

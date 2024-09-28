@@ -63,11 +63,17 @@ def nlms_echo_cancel(mic: np.ndarray, spk_f32: np.ndarray, mu: float, w: np.ndar
 
     # スピーカー出力の全項目の二乗を事前に計算
     spk_squared = spk_f64 ** 2
+    # 音の有無
+    active = np.abs(spk_f32)>0.0001
     # 有効な範囲内でのみ計算を実行
+    r = np.zeros(mic_len,dtype=np.float64)
+    spk_on = np.zeros(mic_len,dtype=np.float64)
     factor = np.zeros(mic_len,dtype=np.float64)
     for n in range(mic_len):
-        factor[n] = np.sum(spk_squared[n:n+num_taps])
-
+        factor[n] = np.sum(spk_squared[n:n+num_taps])+1e-9
+        r[n] = np.sum(active[n:n+num_taps])/num_taps
+        spk_on[n] = 1.0 if r[n]>0.9 else 0.0
+    mu_factor = np.clip( mu/factor, mu/100, mu ) * spk_on
     # LMSアルゴリズムのメインループ
     for mu3 in (mu,):
         for n in range(mic_len):
@@ -87,11 +93,11 @@ def nlms_echo_cancel(mic: np.ndarray, spk_f32: np.ndarray, mu: float, w: np.ndar
                 # エコーキャンセル後の信号を計算 (マイク信号から予測されたエコーを引く)
                 cancelled_signal[n] = e
                 # フィルタ係数の更新式
-                norm_factor = factor[n] # np.dot(spk_slice, spk_slice)
+                factor = mu_factor[n] # np.dot(spk_slice, spk_slice)
                 # if norm_factor != np.dot(spk_slice, spk_slice):
                 #     print(f"ERROR:invalid norm_factor")
-                if norm_factor >1e-1:
-                    w[:] = w + (e*mu3/norm_factor) * spk_slice
+                if factor >1e-3:
+                    w[:] = w + (e*factor) * spk_slice
                     # if np.isnan(w).any() or np.isinf(w).any():
                     #     raise ValueError("spk include NaN or INF")
 
@@ -243,7 +249,7 @@ class AecRecorder:
                             tmp = self._detectbuf[pos*2:pos*2+self.ds_chunk_size]
                             lo,hi = audioop.minmax( tmp, 2 )
                             maxlv = (abs(lo)+abs(hi))/2/32768
-                            self.mic_boost = self._marker_lv/maxlv
+                            self.mic_boost = self._marker_lv/maxlv if maxlv>0 else 1
                             delay:int = pos + self.ds_chunk_size
                             print(f"[SND]delay: pos:{pos} OK {delay} factor:{factor} maxlv:{maxlv} boost:{self.mic_boost}")
                             self.delay_samples = delay

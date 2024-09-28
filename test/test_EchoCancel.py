@@ -30,7 +30,7 @@ def main_get():
     recorder.start()
     time.sleep(1.0)
 
-    playback_data7:AudioF32 = load_wave('test/testData/sample_voice.wav',sampling_rate=sample_rate )
+    playback_data7:AudioF32 = load_wave('test/testData/tts/sample_voice.wav',sampling_rate=sample_rate )
     playback_data7 *= 0.3
     nsec:float = len(playback_data7)/sample_rate
 
@@ -39,9 +39,10 @@ def main_get():
     spk_f32:AudioF32 = mic_f32
 
     _,_ = recorder.get_raw_audio()
-    recorder.play_marker()
+    recorder.play_marker() #
     recorder.play(playback_data7)
     if mode==1:
+        title='seg'
         while True:
             time.sleep(0.5)
             print("+",end="")
@@ -52,6 +53,7 @@ def main_get():
             if not recorder.is_playing():
                 break
         recorder.stop()
+
     else:
         time.sleep(nsec)
         while recorder.is_playing():
@@ -62,31 +64,33 @@ def main_get():
         time.sleep(0.5)
         mic_f32, spk_f32 = recorder.get_raw_audio()
         lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, recorder.aec_mu, recorder.aec_w )
+        title='full'
+        print("---")
 
-    save_and_plot( mic_f32, spk_f32, lms_f32, sample_rate )
+    save_and_plot( title, mic_f32, spk_f32, lms_f32, sample_rate )
 
-def save_and_plot( mic_f32:AudioF32, spk_f32:AudioF32,lms_f32:AudioF32, sample_rate ):
-    print("---")
+def save_and_plot( title:str, mic_f32:AudioF32, spk_f32:AudioF32,lms_f32:AudioF32, sample_rate ):
+
     print(f"[OUT] mic {audio_info(mic_f32,sample_rate=sample_rate)}")
-    save_wave( 'tmp/mic_output.wav', mic_f32, sampling_rate=sample_rate, ch=1)
+    save_wave( f'tmp/out_aec_{title}_mic.wav', mic_f32, sampling_rate=sample_rate, ch=1)
 
     print(f"[OUT] spk {audio_info(spk_f32,sample_rate=sample_rate)}")
-    save_wave( 'tmp/spk_output.wav', spk_f32, sampling_rate=sample_rate, ch=1)
+    save_wave( f'tmp/out_aec_{title}_spk.wav', spk_f32, sampling_rate=sample_rate, ch=1)
 
     print(f"[OUT] lms {audio_info(lms_f32,sample_rate=sample_rate)}")
-    save_wave( 'tmp/lms_output.wav', lms_f32, sampling_rate=sample_rate, ch=1)
+    save_wave( f'tmp/out_aec_{title}_lms.wav', lms_f32, sampling_rate=sample_rate, ch=1)
 
     plt.figure()
     plt.plot(mic_f32, label='Mic')
     plt.plot(spk_f32[-len(mic_f32):], label='Raw Spk', alpha=0.2)
     plt.legend()
-    plt.savefig('tmp/mic_spk_plot.png')
+    plt.savefig(f'tmp/out_aec_{title}_spk.png')
 
     plt.figure()
     plt.plot(mic_f32, label='Mic', alpha=0.5)
     plt.plot(lms_f32, label='Lms Mic', alpha=0.5)
     plt.legend()
-    plt.savefig('tmp/mic_lms_plot.png')
+    plt.savefig(f'tmp/out_aec_{title}_lms.png')
     plt.show()
 
     print("")
@@ -102,7 +106,7 @@ def main_file():
     spk_f32:AudioF32 = load_wave('test/testData/aec_spk_input.wav', sampling_rate=16000)
 
     lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, rec.aec_mu, rec.aec_w )
-    save_and_plot( mic_f32, spk_f32, lms_f32, sample_rate )
+    save_and_plot( 'test', mic_f32, spk_f32, lms_f32, sample_rate )
 
 if __name__ == "__main__":
     #main_tome()
