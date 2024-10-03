@@ -240,6 +240,7 @@ class RecgIterator(Iterable[StreamingRecognizeResponse]):
     def ResStream(self) ->Generator[StreamingRecognizeResponse,None,None]:
         full_iter:AudioMainIterator = AudioMainIterator(self.stream)
         for sub_iter in full_iter:
+            print("\n[Start]\n")
             res_iter:Iterator[StreamingRecognizeResponse] = self.client.streaming_recognize(self.streaming_config, sub_iter )
             for response in res_iter:
                 eos = response.speech_event_type == StreamingRecognizeResponse.SpeechEventType.END_OF_SINGLE_UTTERANCE
@@ -339,6 +340,8 @@ def main_transcription() -> None:
     data_array:list[dict] = load_transcription()
     for x in data_array:
         sys.stdout.write(str(x.get('tm',0)) + ": " + x.get('content','') + "\n")
+
+    aaa_text:str = ''
     recg_iter:RecgIterator = RecgIterator(mic_stream)
     for response in recg_iter:
 
@@ -350,7 +353,7 @@ def main_transcription() -> None:
         if not result.alternatives:
             continue
 
-        transcript = result.alternatives[0].transcript
+        transcript = result.alternatives[0].transcript.strip()
         print("\r",end="")
 
         result_seconds = 0
@@ -367,10 +370,18 @@ def main_transcription() -> None:
         corrected_time = result_end_time
         # Display interim results, but with a carriage return at the end of the
         # line, so subsequent lines will overwrite them.
-        if result.is_final:
-            sys.stdout.write(GREEN)
+        eos:bool = response.speech_event_type == StreamingRecognizeResponse.SpeechEventType.END_OF_SINGLE_UTTERANCE
+        if result.is_final or eos:
+            if aaa_text != '':
+                print( "\n\n ? " + aaa_text + "<EOT>\n")
+            aaa_text = ''
+            if result.is_final:
+                sys.stdout.write(GREEN)
+            else:
+                sys.stdout.write(YELLOW)
             sys.stdout.write(ERACE)
-            sys.stdout.write(str(corrected_time) + ": " + transcript + "\n")
+            sys.stdout.write( '*' if eos else ' ' )
+            sys.stdout.write(str(corrected_time) + ": " + transcript + "<EOT>\n")
             data_array.append( { 'tm': corrected_time, 'content': transcript } )
             save_transcription(data_array)
 
@@ -382,9 +393,14 @@ def main_transcription() -> None:
                 mic_stream.closed = True
                 break
         else:
+            if len(transcript)>0:
+                aaa_text = transcript
+            else:
+                print( "\n\n ? " + aaa_text + "<EOT>\n")
+                aaa_text = ''
             sys.stdout.write(RED)
             sys.stdout.write(ERACE)
-            sys.stdout.write(str(corrected_time) + ": " + transcript + "\r")
+            sys.stdout.write( "<"+aaa_text+">"+str(corrected_time) + ": " + transcript + "<EOT>\r")
 
 def main_llm():
 

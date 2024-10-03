@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, nlms_echo_cancel
+from BotVoice.ace_recorder import AecRecorder, nlms_echo_cancel2
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info
 
 #----------------------
@@ -37,6 +37,8 @@ def main_get():
     mic_f32:AudioF32 = np.zeros( 0, dtype=np.float32 )
     lms_f32:AudioF32 = mic_f32
     spk_f32:AudioF32 = mic_f32
+    mask_f32:AudioF32 = mic_f32
+    errors_f32:AudioF32 = mic_f32
 
     _,_ = recorder.get_raw_audio()
     recorder.play_marker() #
@@ -46,10 +48,15 @@ def main_get():
         while True:
             time.sleep(0.5)
             print("+",end="")
-            delta_lms_f32, delta_mic_f32, delta_spk_f32 = recorder.get_aec_audio()
+            delta_lms_f32, delta_mic_f32, delta_spk_f32, delta_mask, delta_errors = recorder.get_aec_audio()
             mic_f32 = np.concatenate( (mic_f32,delta_mic_f32) )
             lms_f32 = np.concatenate( (lms_f32,delta_lms_f32) )
-            spk_f32 = np.concatenate( (spk_f32,delta_spk_f32) )
+            if len(spk_f32)==0:
+                spk_f32 = np.concatenate( (spk_f32,delta_spk_f32) )
+            else:
+                spk_f32 = np.concatenate( (spk_f32,delta_spk_f32[-len(mic_f32):]) )
+            mask_f32 = np.concatenate( (mask_f32,delta_mask) )
+            errors_f32 = np.concatenate( (errors_f32,delta_errors) )
             if not recorder.is_playing():
                 break
         recorder.stop()
@@ -63,13 +70,13 @@ def main_get():
         recorder.stop()
         time.sleep(0.5)
         mic_f32, spk_f32 = recorder.get_raw_audio()
-        lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, recorder.aec_mu, recorder.aec_w )
+        lms_f32, mask_f32, errors_f32 = nlms_echo_cancel2( mic_f32, spk_f32, recorder.aec_mu, recorder.aec_w )
         title='full'
         print("---")
 
-    save_and_plot( title, mic_f32, spk_f32, lms_f32, sample_rate )
+    save_and_plot( title, mic_f32, spk_f32, lms_f32, mask_f32, errors_f32, sample_rate )
 
-def save_and_plot( title:str, mic_f32:AudioF32, spk_f32:AudioF32,lms_f32:AudioF32, sample_rate ):
+def save_and_plot( title:str, mic_f32:AudioF32, spk_f32:AudioF32,lms_f32:AudioF32, mask_f32:AudioF32, errors_f32:AudioF32, sample_rate ):
 
     print(f"[OUT] mic {audio_info(mic_f32,sample_rate=sample_rate)}")
     save_wave( f'tmp/out_aec_{title}_mic.wav', mic_f32, sampling_rate=sample_rate, ch=1)
@@ -80,17 +87,46 @@ def save_and_plot( title:str, mic_f32:AudioF32, spk_f32:AudioF32,lms_f32:AudioF3
     print(f"[OUT] lms {audio_info(lms_f32,sample_rate=sample_rate)}")
     save_wave( f'tmp/out_aec_{title}_lms.wav', lms_f32, sampling_rate=sample_rate, ch=1)
 
-    plt.figure()
-    plt.plot(mic_f32, label='Mic')
-    plt.plot(spk_f32[-len(mic_f32):], label='Raw Spk', alpha=0.2)
+    max_y = round( 0.05 + max( np.max(np.abs(mic_f32)), np.max(np.abs(spk_f32)), np.max(np.abs(lms_f32)) ), 1 )
+    x1 = np.array( range(len(mic_f32)) )
+    x2 = np.array( range(len(spk_f32))) - (len(mic_f32)-len(spk_f32))
+    mask_bool:list[bool] = mask_f32>0.0
+    plt.figure(figsize=(12,3))
+    plt.plot(x1,mic_f32, label='Mic')
+    plt.plot(x2,spk_f32, label='Spk', alpha=0.2)
+    plt.ylim(-max_y,max_y)
     plt.legend()
-    plt.savefig(f'tmp/out_aec_{title}_spk.png')
+    plt.savefig(f'tmp/out_aec_{title}_spk.png',dpi=300)
 
-    plt.figure()
-    plt.plot(mic_f32, label='Mic', alpha=0.5)
-    plt.plot(lms_f32, label='Lms Mic', alpha=0.5)
-    plt.legend()
-    plt.savefig(f'tmp/out_aec_{title}_lms.png')
+    # 図の作成
+    fig, ax1 = plt.subplots(figsize=(12, 3))
+    # Y1軸 (Mic と Lms Mic) にデータをプロット
+    ax1.fill_between(x1, -max_y, max_y, where=mask_bool, color='green', lw=0, alpha=0.1, label='mask' ) 
+    ax1.plot(x1,mic_f32, label='Mic', alpha=0.3)
+    ax1.plot(x1,lms_f32, label='LMS', alpha=0.3)
+    ax1.set_ylim(-max_y,max_y)
+    # 凡例の表示
+    ax1.legend(loc='upper left')
+    # 画像を保存
+    plt.savefig(f'tmp/out_aec_{title}_lms.png', dpi=300)
+
+    # 図の作成
+    fig, ax1 = plt.subplots(figsize=(12, 3))
+    # Y1軸 Errorsをプロット
+    ax1.plot(x1,errors_f32, color='red', label='Errors')
+    ax1.set_ylabel('Errors')
+    ax1.legend(loc='upper left')
+    # Y2軸 Maskをプロット
+    ax2 = ax1.twinx()
+    ax2.fill_between(x1, 0, mask_f32, color='green', lw=0, alpha=0.2, label='mask' ) 
+    ax2.set_ybound(0.0,1.0)
+    ax2.set_ylabel('Mask')
+    ax2.legend(loc='upper right')
+
+    # 画像を保存
+    plt.savefig(f'tmp/out_aec_{title}_errors.png', dpi=300)
+
+    # グラフを表示
     plt.show()
 
     print("")
@@ -105,8 +141,8 @@ def main_file():
     mic_f32:AudioF32 = load_wave('test/testData/aec_mic_input.wav', sampling_rate=16000)
     spk_f32:AudioF32 = load_wave('test/testData/aec_spk_input.wav', sampling_rate=16000)
 
-    lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, rec.aec_mu, rec.aec_w )
-    save_and_plot( 'test', mic_f32, spk_f32, lms_f32, sample_rate )
+    lms_f32, mask, errors = nlms_echo_cancel2( mic_f32, spk_f32, rec.aec_mu, rec.aec_w )
+    save_and_plot( 'test', mic_f32, spk_f32, lms_f32, mask, errors, sample_rate )
 
 if __name__ == "__main__":
     #main_tome()

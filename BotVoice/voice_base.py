@@ -72,7 +72,7 @@ class VoiceBase:
                 transcribe_time = time.time()-st
                 #seglist.dump()
 
-                text,split_sec = seglist.get_text( split_sec )
+                text,split_sec = seglist.get_text( split_sec, debug=True )
                 text_list.append(text)
                 print(f"#Audio {transcribe_time:.3f}s len:{audio_sec:.3f}s,{len(audio_np)} lv:{audio_max}")
 
