@@ -205,8 +205,8 @@ class TranscribRes:
         self.language:str = as_str(data.get('language'))
         self.transcribe_time:float = 0.0
 
-    def get_text(self, end_sec:float ) ->tuple[str,float]:
-        print("# get_text")
+    def get_text(self, end_sec:float, debug:bool=False ) ->tuple[str,float]:
+        if debug: print("# get_text")
         split_sec:float = 0
         for seg in self.segments:
             if seg.words:
@@ -218,24 +218,25 @@ class TranscribRes:
         text_list = []
         for idx,seg in enumerate(self.segments):
             if float(seg.end)<=split_sec:
-                print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] {seg.no_speech_prob:.2f} {seg.text}")
-                if seg.words:
-                    for iw,word in enumerate(seg.words):
-                        print(f"  {idx:2d}-{iw:2d} [{word.start:.2f}-{word.end:.2f}] {word.word}")
+                if debug: 
+                    print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] {seg.no_speech_prob:.2f} {seg.text}")
+                    if seg.words:
+                        for iw,word in enumerate(seg.words):
+                            print(f"  {idx:2d}-{iw:2d} [{word.start:.2f}-{word.end:.2f}] {word.word}")
                 text_list.append(seg.text)
             elif float(seg.start)<split_sec:
-                print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] {seg.no_speech_prob:.2f} ")
+                if debug: print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] {seg.no_speech_prob:.2f} ")
                 ww = []
                 if seg.words:
                     for iw,word in enumerate(seg.words):
                         if float(word.end)<=split_sec:
-                            print(f"  {idx:2d}-{iw:2d} [{word.start:.2f}-{word.end:.2f}] {word.word}")
+                            if debug: print(f"  {idx:2d}-{iw:2d} [{word.start:.2f}-{word.end:.2f}] {word.word}")
                             text_list.append(word.word)
                         else:
-                            print(f"  {idx:2d}-{iw:2d} [{word.start:.2f}-{word.end:.2f}] ### {word.word}")
+                            if debug: print(f"  {idx:2d}-{iw:2d} [{word.start:.2f}-{word.end:.2f}] ### {word.word}")
                 text_list.append(''.join(ww))
             else:
-                print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] ### {seg.text}")
+                if debug: print(f"  {idx:2d} [{seg.start:.2f}-{seg.end:.2f}] ### {seg.text}")
         return ' '.join(text_list), split_sec
 
     def dump(self):

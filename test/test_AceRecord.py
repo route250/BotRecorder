@@ -11,13 +11,20 @@ from pathlib import Path
 import mlx_whisper.whisper
 import mlx_whisper
 
+import style_bert_vits2
+import style_bert_vits2.logging
 from style_bert_vits2.nlp import bert_models
 from style_bert_vits2.constants import Languages
 from style_bert_vits2.tts_model import TTSModel
-
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, nlms_echo_cancel
+from BotVoice.ace_recorder import AecRecorder, nlms_echo_cancel2
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info, sin_signal
+from test_EchoCancel import save_and_plot
+
+# style-vert-vits2のログを設定
+import loguru
+loguru.logger.remove()  # 既存のログ設定を削除
+loguru.logger.add(sys.stderr, level="ERROR")  # ERRORレベルのログのみを表示
 
 # データ作成
 def main_make_audio():
@@ -96,84 +103,16 @@ def main_make_audio():
     ]
 
     for i,g in enumerate(greetings):
+        st = time.time()
         sr, audio_i16 = model.infer(text=g, style_weight=0.0 )
-        print(g)
+        et = time.time()
+        t = et-st
+        print(f"{i:3d} {t:.3f} {g}")
         save_wave( f'tmp/voice{i:02d}_{g}.wav', audio_i16, sampling_rate=sr, ch=1)
 
 #----------------------
 # トーン
 #----------------------
-
-def main_get():
-   
-    #list_microphones()
-
-    pa_chunk_size = 3200
-    sample_rate:int = 16000
-
-    mode = 1
-
-    recorder:AecRecorder = AecRecorder( device=None, pa_chunk_size=pa_chunk_size, sample_rate=sample_rate)
-
-
-    # is_maker_tone( canceller.marker_tone, sample_rate )
-
-    recorder.start()
-    time.sleep(1.0)
-
-    playback_data7:AudioF32 = load_wave('test/testData/tts/sample_voice.wav',sampling_rate=sample_rate )
-    playback_data7 *= 0.3
-    nsec:float = len(playback_data7)/sample_rate
-
-    mic_f32:AudioF32 = np.zeros( 0, dtype=np.float32 )
-    lms_f32:AudioF32 = mic_f32
-    spk_f32:AudioF32 = mic_f32
-
-    _,_ = recorder.get_raw_audio()
-    recorder.play(playback_data7)
-    if mode==1:
-        while True:
-            time.sleep(0.5)
-            print("+",end="")
-            delta_lms_f32, delta_mic_f32, delta_spk_f32 = recorder.get_aec_audio()
-            mic_f32 = np.concatenate( (mic_f32,delta_mic_f32) )
-            lms_f32 = np.concatenate( (lms_f32,delta_lms_f32) )
-            spk_f32 = np.concatenate( (spk_f32,delta_spk_f32) )
-            if not recorder.is_playing:
-                break
-        recorder.stop()
-    else:
-        time.sleep(nsec)
-        while recorder.is_playing:
-            print("+",end="")
-            time.sleep(0.5)
-        # 停止
-        recorder.stop()
-        mic_f32, spk_f32 = recorder.get_raw_audio()
-        lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, recorder.aec_mu, recorder.aec_w )
-
-    print("---")
-    print(f"[OUT] mic {audio_info(mic_f32,sample_rate=sample_rate)}")
-    print(f"[OUT] spk {audio_info(spk_f32,sample_rate=sample_rate)}")
-
-    save_wave( 'tmp/mic_output.wav', mic_f32, sampling_rate=sample_rate, ch=1)
-    save_wave( 'tmp/spk_output.wav', spk_f32, sampling_rate=sample_rate, ch=1)
-
-    save_wave( 'tmp/lms_output.wav', lms_f32, sampling_rate=sample_rate, ch=1)
-
-    plt.figure()
-    plt.plot(mic_f32, label='Mic')
-    plt.plot(spk_f32, label='Raw Spk', alpha=0.2)
-    plt.legend()
-
-    plt.figure()
-    plt.plot(mic_f32, label='Mic', alpha=0.5)
-    plt.plot(lms_f32, label='Lms Mic', alpha=0.5)
-    plt.legend()
-
-    plt.show()
-
-    print("")
 
 def w_transcrib(audio_np:AudioF32,model_size):
     st = time.time()
@@ -256,11 +195,12 @@ def main_x():
     mic_f32:AudioF32 = np.zeros( 0, dtype=np.float32 )
     lms_f32:AudioF32 = mic_f32
     spk_f32:AudioF32 = mic_f32
+    mask_f32:AudioF32 = mic_f32
+    errors_f32:AudioF32 = mic_f32
 
     recorder.start()
     time.sleep(0.5)
     recorder.play_marker()
-
 
     for i,g in enumerate(files):
         audio_i16 = load_wave( g, sampling_rate=sample_rate )
@@ -274,10 +214,17 @@ def main_x():
         while True:
             time.sleep(0.5)
             print("+",end="")
-            delta_lms_f32, delta_mic_f32, delta_spk_f32 = recorder.get_aec_audio()
+            delta_lms_f32, delta_mic_f32, delta_spk_f32, delta_mask, delta_errors = recorder.get_aec_audio()
             mic_f32 = np.concatenate( (mic_f32,delta_mic_f32) )
             lms_f32 = np.concatenate( (lms_f32,delta_lms_f32) )
-            spk_f32 = np.concatenate( (spk_f32,delta_spk_f32) )
+            diff = len(delta_spk_f32)-len(delta_mic_f32)
+            print(f"--diff:{diff}")
+            if len(spk_f32)==0:
+                spk_f32 = np.concatenate( (spk_f32,delta_spk_f32) )
+            else:
+                spk_f32 = np.concatenate( (spk_f32,delta_spk_f32[-len(mic_f32):]) )
+            mask_f32 = np.concatenate( (mask_f32,delta_mask) )
+            errors_f32 = np.concatenate( (errors_f32,delta_errors) )
             if not recorder.is_playing():
                 break
 
@@ -290,24 +237,8 @@ def main_x():
     print(wres)
 
     print("---")
-    print(f"[OUT] mic {audio_info(mic_f32,sample_rate=sample_rate)}")
-    save_wave( 'tmp/mic_output.wav', mic_f32, sampling_rate=sample_rate, ch=1)
-    print(f"[OUT] spk {audio_info(spk_f32,sample_rate=sample_rate)}")
-    save_wave( 'tmp/spk_output.wav', spk_f32, sampling_rate=sample_rate, ch=1)
-    print(f"[OUT] lms {audio_info(lms_f32,sample_rate=sample_rate)}")
-    save_wave( 'tmp/lms_output.wav', lms_f32, sampling_rate=sample_rate, ch=1)
-
-    plt.figure()
-    plt.plot(mic_f32, label='Mic')
-    plt.plot(spk_f32, label='Raw Spk', alpha=0.2)
-    plt.legend()
-
-    plt.figure()
-    plt.plot(mic_f32, label='Mic', alpha=0.5)
-    plt.plot(lms_f32, label='Lms Mic', alpha=0.5)
-    plt.legend()
-
-    plt.show()
+    save_and_plot( 'long', mic_f32, spk_f32, lms_f32, mask_f32, errors_f32, sample_rate )
 
 if __name__ == "__main__":
-    main_x()
+    # main_x()
+    main_make_audio()

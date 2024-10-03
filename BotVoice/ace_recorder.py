@@ -7,6 +7,7 @@ import math
 import audioop
 
 import numpy as np
+from numpy.typing import NDArray
 import sounddevice as sd
 
 
@@ -22,7 +23,7 @@ def maek_marker_tone( size:int, sample_rate:int,freq1:int,freq2:int, vol:float=0
     tone_all[s:s+len(tone_f32)] = tone_f32
     return tone_all
 
-def nlms_echo_cancel(mic: np.ndarray, spk_f32: np.ndarray, mu: float, w: np.ndarray) -> np.ndarray:
+def nlms_echo_cancel(mic: AudioF32, spk_f32: AudioF32, mu: float, w: NDArray[np.float64]) -> tuple[float,AudioF32,NDArray[np.float32]]:
     """
     LMSアルゴリズムによるエコーキャンセルを実行する関数。
 
@@ -52,6 +53,8 @@ def nlms_echo_cancel(mic: np.ndarray, spk_f32: np.ndarray, mu: float, w: np.ndar
 
     # エコーキャンセル後の信号を保存する配列
     cancelled_signal = np.zeros(mic_len,dtype=np.float32)
+    # 誤差を記録する配列
+    errors = np.zeros(mic_len,dtype=np.float32)
 
     spk_f64 = spk_f32.astype(np.float64)
 
@@ -74,6 +77,7 @@ def nlms_echo_cancel(mic: np.ndarray, spk_f32: np.ndarray, mu: float, w: np.ndar
         r[n] = np.sum(active[n:n+num_taps])/num_taps
         spk_on[n] = 1.0 if r[n]>0.9 else 0.0
     mu_factor = np.clip( mu/factor, mu/100, mu ) * spk_on
+    spk_rate:float = float(np.sum(spk_on)/len(spk_on)) 
     # LMSアルゴリズムのメインループ
     for mu3 in (mu,):
         for n in range(mic_len):
@@ -89,9 +93,9 @@ def nlms_echo_cancel(mic: np.ndarray, spk_f32: np.ndarray, mu: float, w: np.ndar
                 
                 # エラー e(n) を計算 (マイク信号 mic[n] とフィルタ出力 y の差)
                 e = mic[n] - y
-
                 # エコーキャンセル後の信号を計算 (マイク信号から予測されたエコーを引く)
                 cancelled_signal[n] = e
+                errors[n] = e
                 # フィルタ係数の更新式
                 factor = mu_factor[n] # np.dot(spk_slice, spk_slice)
                 # if norm_factor != np.dot(spk_slice, spk_slice):
@@ -101,7 +105,134 @@ def nlms_echo_cancel(mic: np.ndarray, spk_f32: np.ndarray, mu: float, w: np.ndar
                     # if np.isnan(w).any() or np.isinf(w).any():
                     #     raise ValueError("spk include NaN or INF")
 
-    return np.clip(cancelled_signal,-0.99,0.99)
+    return spk_rate, np.clip(cancelled_signal,-0.99,0.99),errors
+
+def validate_f32(arr:np.ndarray, name ):
+    try:
+        if len(arr.shape) != 1:
+            raise TypeError(f"{name} must be a 1-dimensional array")
+        if arr.dtype != np.float32:
+            raise TypeError(f"{name} must be of dtype np.float32")
+        if np.isnan(arr).any() or np.isinf(arr).any():
+            raise ValueError(f"{name} includes NaN or INF")
+    except:
+        raise TypeError(f"{name} must be a numpy array")
+
+def validate_f64(arr:np.ndarray, name ):
+    try:
+        if len(arr.shape) != 1:
+            raise TypeError(f"{name} must be a 1-dimensional array")
+        if arr.dtype != np.float64:
+            raise TypeError(f"{name} must be of dtype np.float64")
+        if np.isnan(arr).any() or np.isinf(arr).any():
+            raise ValueError(f"{name} includes NaN or INF")
+    except:
+        raise TypeError(f"{name} must be a numpy array")
+
+def nlms_echo_cancel2(mic: AudioF32, spk_f32: AudioF32, mu: float, w: NDArray[np.float64]) -> tuple[AudioF32,AudioF32,AudioF32]:
+    """
+    LMSアルゴリズムによるエコーキャンセルを実行する関数。
+
+    Parameters:
+    mic (np.ndarray): マイクからの入力信号
+    spk (np.ndarray): スピーカーからの出力信号
+    mu (float): ステップサイズ（学習率）
+    w (np.ndarray): フィルタ係数ベクトルの初期値
+
+    Returns:
+    np.ndarray: エコーキャンセル後の信号
+    """
+    validate_f32(mic,'mic')
+    validate_f32(spk_f32, 'spk')
+    validate_f64(w,'coeff')
+    mic_len = len(mic)
+    num_taps = len(w)
+    if mic_len != len(spk_f32)-num_taps:
+        raise TypeError("invalid array length")
+
+    # エコーキャンセル後の信号を保存する配列
+    cancelled_signal = np.zeros(mic_len,dtype=np.float32)
+    # 誤差を記録する配列
+    errors = np.zeros(mic_len,dtype=np.float32)
+    mask = np.ones(mic_len,dtype=np.float32)
+
+    spk_f64 = spk_f32.astype(np.float64)
+
+    AEC_PLIMIT:float = 1e30
+    maxlv = np.sum(np.abs(w))
+    if maxlv>AEC_PLIMIT:
+        print(f"[WARN] w is too large {maxlv}")
+        w *= (AEC_PLIMIT/maxlv)
+
+    # スピーカー出力の全項目の二乗を事前に計算
+    spk_squared = spk_f64 ** 2
+    # 音の有無
+    active = np.abs(spk_f32)>0.0001
+    # 有効な範囲内でのみ計算を実行
+    r = np.zeros(mic_len,dtype=np.float64)
+    spk_on = np.zeros(mic_len,dtype=np.float64)
+    factor = np.zeros(mic_len,dtype=np.float64)
+    for n in range(mic_len):
+        factor[n] = np.sum(spk_squared[n:n+num_taps])+1e-9
+        r[n] = np.sum(active[n:n+num_taps])/num_taps
+        spk_on[n] = 1.0 if r[n]>0.9 else 0.0
+    mu_factor = np.clip( mu/factor, mu/100, mu ) * spk_on
+
+    concentration:float = 0.0
+    cw:int = 500
+    cx:int = 0
+    c_hi:float = 3.5
+    c_lo:float = 3.0
+    c_val = 0.0
+    # LMSアルゴリズムのメインループ
+    for mu3 in (mu,):
+        for n in range(mic_len):
+                # スピーカー出力 spk の一部をスライスして使う (直近の num_taps サンプルを使う)
+                spk_slice = spk_f64[n:n+num_taps]  # スライスしてタップ分の信号を取得
+                # スピーカー出力がなければ処理しない
+                if np.count_nonzero(spk_slice)==0:
+                    cancelled_signal[n] = mic[n]
+                    c_val = 1.0
+                    continue
+                # スピーカー出力 spk_slice とフィルタ係数 w の内積によるフィルタ出力 y(n) を計算
+                y = np.dot(w, spk_slice)
+                # エラー e(n) を計算 (マイク信号 mic[n] とフィルタ出力 y の差)
+                e = mic[n] - y
+                # エコーキャンセル後の信号を計算 (マイク信号から予測されたエコーを引く)
+                cancelled_signal[n] = e
+                errors[n] = e
+                # 収束の程度を判定
+                if cx==0:
+                    concentration = evaluate_concentration( w )
+                cx = (cx+1)%cw
+                if concentration<c_lo:
+                    c_val = 0.0
+                elif concentration>c_hi:
+                    c_val = 1.0
+                mask[n] = c_val
+                # フィルタ係数の更新式
+                factor = mu_factor[n] # np.dot(spk_slice, spk_slice)
+                w[:] = w + (e*factor) * spk_slice
+
+    return np.clip(cancelled_signal,-0.99,0.99),mask,errors
+
+def evaluate_concentration(coeff:NDArray[np.float64], window_factor=6) ->float:
+    num_taps = len(coeff)
+    # widthをnum_taps/6の半分に設定
+    half_width = int(num_taps / window_factor / 2)
+    coeff_abs = np.abs(coeff)
+    max_index_abs = np.argmax(coeff_abs)
+    
+    start_index = max(0, max_index_abs - half_width)
+    end_index = min(max_index_abs + half_width, num_taps)
+    window_size = end_index - start_index
+    scaling_factor = num_taps / window_size
+    
+    local_sum = np.sum(coeff_abs[start_index:end_index])
+    scaled_total_sum = np.sum(coeff_abs) / scaling_factor
+    
+    rate = local_sum / scaled_total_sum
+    return rate
 
 class SpkPair(NamedTuple):
     f32:AudioF32
@@ -168,6 +299,22 @@ class AecRecorder:
             self.aec_w *= (AEC_PLIMIT/maxlv)
         self.aec_plimit:float = 1.2
 
+    def get_aec_coeff(self) ->NDArray[np.float64]:
+        return self.aec_w.copy()
+
+    def save_aec_coeff(self,filepath):
+        np.savez_compressed(filepath,aec_coeff=self.get_aec_coeff())
+
+    def set_aec_coeff(self,coeff:NDArray[np.float64]):
+        if len(coeff) == len(self.aec_w):
+            self.aec_w[:] = coeff.copy().astype(np.float64)
+
+    def load_aec_coeff(self,filepath):
+        zip = np.load(filepath)
+        coeff = zip.get('aec_coeff',None)
+        if coeff is not None:
+            self.set_aec_coeff(coeff)
+
     def is_playing(self) ->int:
         with self._lock:
             if self._is_playing:
@@ -233,6 +380,12 @@ class AecRecorder:
             with self._lock:
                 self.play_data.extend( data )
                 self._is_playing = True
+
+    def cancel(self):
+        """再生データを設定し、再生を開始"""
+        print("canlel ",end="")
+        with self._lock:
+            self.play_data = []
 
     def _callback(self, inbytes:np.ndarray, outdata:np.ndarray, frames:int, time, status ) ->None:
         try:
@@ -331,17 +484,17 @@ class AecRecorder:
         spk_f32 = spk_f32[-len(mic_f32)-delay_samples-len(self.aec_w):len(spk_f32)-delay_samples]
         return mic_f32,spk_f32
     
-    def get_aec_audio(self) ->tuple[AudioF32,AudioF32,AudioF32]:
+    def get_aec_audio(self) ->tuple[AudioF32,AudioF32,AudioF32,AudioF32,AudioF32]:
         mic_f32, spk_f32 = self.get_raw_audio()
         if len(mic_f32)==0:
-            return mic_f32,mic_f32,mic_f32
-        lms_f32:AudioF32 = nlms_echo_cancel( mic_f32, spk_f32, self.aec_mu, self.aec_w )
+            return mic_f32,mic_f32,mic_f32,mic_f32,mic_f32
+        lms_f32, mask, errors = nlms_echo_cancel2( mic_f32, spk_f32, self.aec_mu, self.aec_w )
         # lms_f32:AudioF32 = rls_echo_cancel( mic_f32, spk_f32, 0.98, 100, self.aec_w, self.aec_offset )
-        return lms_f32, mic_f32, spk_f32
+        return lms_f32, mic_f32, spk_f32, mask, errors
 
-    def get_audio(self) ->AudioF32:
-        lms_f32,_,_ = self.get_aec_audio()
-        return lms_f32
+    def get_audio(self) ->tuple[AudioF32,AudioF32]:
+        lms_f32,_,_,mask,_ = self.get_aec_audio()
+        return lms_f32,mask
 
 def list_microphones():
     print( sd.query_devices() )
