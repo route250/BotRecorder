@@ -23,11 +23,9 @@ from openai.types.chat import ChatCompletionChunk
 from openai._streaming import Stream
 
 from vosk import KaldiRecognizer, Model, SetLogLevel
-from silero_vad import load_silero_vad
-import torch
 
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, evaluate_concentration
+from BotVoice.ace_recorder import AecRecorder, AecRes, evaluate_concentration
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info, sin_signal, f32_to_i16
 from BotVoice.rec_util import AudioI8, AudioI16, AudioF32, EmptyF32, np_append, save_wave, load_wave, signal_ave, sin_signal
 from BotVoice.segments import TranscribRes, Segment, Word
@@ -79,8 +77,6 @@ class AecBot:
         self.sample_rate:int = 16000
         self.recorder:AecRecorder = AecRecorder( device=None, pa_chunk_size=self.pa_chunk_size, sample_rate=self.sample_rate)
         self.aec_coeff_path = 'tmp/aec_coeff.npz'
-
-        self.vad_model = load_silero_vad()
 
         self.transcrib_model = 'mlx-community/whisper-small-mlx-q4'
         # self.transcrib_model = "mlx-community/whisper-turbo"
@@ -148,31 +144,28 @@ class AecBot:
             # log用
             while self.run and self.recorder.is_active():
                 now:float = time.time()
-                mic_f32, mask = self.recorder.get_audio()
-                if len(mic_f32)<=0:
+                res:AecRes = self.recorder.get_aec_audio()
+                if len(res.audio)<=0:
                     time.sleep(0.2)
                     continue
 
                 if (now-start_time)>5.0:
                     self.recorder.save_aec_coeff(self.aec_coeff_path)
 
-                seg_f32 = mic_f32*mask
+                seg_f32 = res.audio * res.mask
                 sample_count+=len(seg_f32)
-                v = silerovad(self.vad_model,seg_f32)
-                vv = v>0.5
-                vseg_f32 = seg_f32 * vv
                 
-                i16 = f32_to_i16(vseg_f32)
+                i16 = f32_to_i16(seg_f32)
                 if self.recognizer.AcceptWaveform(i16.tobytes()):
-                    res = json.loads( self.recognizer.FinalResult() )
-                    text = res.get("text","").strip()
+                    vosk_res:dict = json.loads( self.recognizer.FinalResult() )
+                    text = vosk_res.get("text","").strip()
                     if text!='' and not text in IGNORE_WORDS:
                         print(f"[Transcrib] Final {text}")
                         self.transcrib_buffer += f" {text}"
                         last_sample = sample_count
                 else:
-                    res = json.loads( self.recognizer.PartialResult() )
-                    text = res.get("partial","").strip()
+                    vosk_res = json.loads( self.recognizer.PartialResult() )
+                    text = vosk_res.get("partial","").strip()
                     if text!='' and not text in IGNORE_WORDS:
                         print(f"[Transcrib] Partial {text}")
                         if self.transcrib_buffer=='':
@@ -322,26 +315,6 @@ def main_coeff_plot():
     plt.legend()
     plt.show()
 
-def silerovad( model, x:NDArray[np.float32] ) ->NDArray[np.float32]:
-    chunk_size = 512
-    sr=16000
-    # 処理する範囲を最初に計算 (512の倍数に丸める)
-    l = (len(x) // chunk_size) * chunk_size
-    ret:NDArray[np.float32] = np.zeros_like(x)
-    t:torch.Tensor = torch.Tensor(x)
-    for i in range(0,l,chunk_size):
-        chunk = t[i:i+chunk_size]
-        prob = model(chunk,sr)
-        ret[i:i+chunk_size] = float(prob[0][0])
-    return ret
-
-def main_vad():
-    import torch
-    import torchaudio
-    model = load_silero_vad()
-    x = np.zeros(16000,dtype=np.float32)
-    ret = silerovad(model,x)
-    print()
 if __name__ == "__main__":
     # main_vad()
     main()

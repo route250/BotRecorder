@@ -17,7 +17,7 @@ from style_bert_vits2.nlp import bert_models
 from style_bert_vits2.constants import Languages
 from style_bert_vits2.tts_model import TTSModel
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, nlms_echo_cancel2
+from BotVoice.ace_recorder import AecRecorder, AecRes, nlms_echo_cancel2
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info, sin_signal
 from test_EchoCancel import save_and_plot
 
@@ -151,8 +151,8 @@ def main_x():
     tmpdir='tmp/model_assets'
     assets_root = Path(tmpdir)
 
-    bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm",)
-    bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
+    # bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm",)
+    # bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
 
     # Hugging Faceから試しにデフォルトモデルをダウンロードしてみて、それを音声合成に使ってみる
 
@@ -196,6 +196,7 @@ def main_x():
     lms_f32:AudioF32 = mic_f32
     spk_f32:AudioF32 = mic_f32
     mask_f32:AudioF32 = mic_f32
+    vad_f32:AudioF32 = mic_f32
     errors_f32:AudioF32 = mic_f32
 
     recorder.start()
@@ -214,17 +215,16 @@ def main_x():
         while True:
             time.sleep(0.5)
             print("+",end="")
-            delta_lms_f32, delta_mic_f32, delta_spk_f32, delta_mask, delta_errors = recorder.get_aec_audio()
-            mic_f32 = np.concatenate( (mic_f32,delta_mic_f32) )
-            lms_f32 = np.concatenate( (lms_f32,delta_lms_f32) )
-            diff = len(delta_spk_f32)-len(delta_mic_f32)
-            print(f"--diff:{diff}")
+            rec:AecRes = recorder.get_aec_audio()
+            mic_f32 = np.concatenate( (mic_f32,rec.raw) )
+            lms_f32 = np.concatenate( (lms_f32,rec.audio) )
             if len(spk_f32)==0:
-                spk_f32 = np.concatenate( (spk_f32,delta_spk_f32) )
+                spk_f32 = np.concatenate( (spk_f32,rec.spk) )
             else:
-                spk_f32 = np.concatenate( (spk_f32,delta_spk_f32[-len(mic_f32):]) )
-            mask_f32 = np.concatenate( (mask_f32,delta_mask) )
-            errors_f32 = np.concatenate( (errors_f32,delta_errors) )
+                spk_f32 = np.concatenate( (spk_f32,rec.spk[-len(rec.audio):]) )
+            mask_f32 = np.concatenate( (mask_f32,rec.mask) )
+            vad_f32 = np.concatenate( (vad_f32,rec.vad) )
+            errors_f32 = np.concatenate( (errors_f32,rec.errors) )
             if not recorder.is_playing():
                 break
 
@@ -237,8 +237,8 @@ def main_x():
     print(wres)
 
     print("---")
-    save_and_plot( 'long', mic_f32, spk_f32, lms_f32, mask_f32, errors_f32, sample_rate )
+    save_and_plot( 'long', mic_f32, spk_f32, lms_f32, mask_f32, vad_f32, errors_f32, sample_rate )
 
 if __name__ == "__main__":
-    # main_x()
-    main_make_audio()
+    main_x()
+    # main_make_audio()

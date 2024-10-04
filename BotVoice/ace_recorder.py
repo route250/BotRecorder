@@ -9,7 +9,8 @@ import audioop
 import numpy as np
 from numpy.typing import NDArray
 import sounddevice as sd
-
+from silero_vad import load_silero_vad
+import torch
 
 sys.path.append(os.getcwd())
 from BotVoice.rec_util import AudioI16, AudioF32, EmptyF32, np_append, save_wave, load_wave, signal_ave, sin_signal
@@ -238,6 +239,14 @@ class SpkPair(NamedTuple):
     f32:AudioF32
     i16:AudioI16
 
+class AecRes(NamedTuple):
+    audio:AudioF32
+    raw:AudioF32
+    spk:AudioF32
+    mask:AudioF32
+    vad:AudioF32
+    errors:AudioF32
+
 class AecRecorder:
 
     H1:int=440
@@ -298,6 +307,12 @@ class AecRecorder:
         if maxlv>AEC_PLIMIT:
             self.aec_w *= (AEC_PLIMIT/maxlv)
         self.aec_plimit:float = 1.2
+
+        # VAD
+        self.vad_model = load_silero_vad()
+        self.vad_sw:float = 0.0
+        self.vad_up:float = 0.6
+        self.vad_dn:float = 0.4
 
     def get_aec_coeff(self) ->NDArray[np.float64]:
         return self.aec_w.copy()
@@ -484,17 +499,40 @@ class AecRecorder:
         spk_f32 = spk_f32[-len(mic_f32)-delay_samples-len(self.aec_w):len(spk_f32)-delay_samples]
         return mic_f32,spk_f32
     
-    def get_aec_audio(self) ->tuple[AudioF32,AudioF32,AudioF32,AudioF32,AudioF32]:
+    def get_aec_audio(self) ->AecRes:
         mic_f32, spk_f32 = self.get_raw_audio()
         if len(mic_f32)==0:
-            return mic_f32,mic_f32,mic_f32,mic_f32,mic_f32
+            return AecRes(mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32)
         lms_f32, mask, errors = nlms_echo_cancel2( mic_f32, spk_f32, self.aec_mu, self.aec_w )
         # lms_f32:AudioF32 = rls_echo_cancel( mic_f32, spk_f32, 0.98, 100, self.aec_w, self.aec_offset )
-        return lms_f32, mic_f32, spk_f32, mask, errors
+        vad = self.silerovad((lms_f32))
+        for i,v in enumerate(vad):
+            if self.vad_sw==0.0:
+                if v>self.vad_up:
+                    self.vad_sw = 1.0
+            else:
+                if v<self.vad_dn:
+                    self.vad_sw = 0.0
+            mask[i] *= self.vad_sw
+        ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, mask, vad, errors)
+        return ret
 
     def get_audio(self) ->tuple[AudioF32,AudioF32]:
-        lms_f32,_,_,mask,_ = self.get_aec_audio()
-        return lms_f32,mask
+        ret:AecRes = self.get_aec_audio()
+        return ret.audio, ret.mask
+
+    def silerovad( self, x:AudioF32 ) ->AudioF32:
+        chunk_size = 512
+        sr=16000
+        # 処理する範囲を最初に計算 (512の倍数に丸める)
+        l = (len(x) // chunk_size) * chunk_size
+        ret:NDArray[np.float32] = np.zeros_like(x)
+        t:torch.Tensor = torch.Tensor(x)
+        for i in range(0,l,chunk_size):
+            chunk = t[i:i+chunk_size]
+            prob = self.vad_model(chunk,sr)
+            ret[i:i+chunk_size] = float(prob[0][0])
+        return ret
 
 def list_microphones():
     print( sd.query_devices() )

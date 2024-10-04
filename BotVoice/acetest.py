@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from threading import Thread
 from traceback import print_exc
+import curses
 from dotenv import load_dotenv
 
 import matplotlib.pyplot as plt
@@ -30,6 +31,7 @@ from BotVoice.rec_util import AudioI8, AudioI16, AudioF32, EmptyF32, np_append, 
 from BotVoice.segments import TranscribRes, Segment, Word
 from BotVoice.bot_audio import BotAudio,RATE,CHUNK_SEC,CHUNK_LEN
 from BotVoice.voice_base import VoiceBase
+from BotVoice.text_to_voice import TtsEngine
 
 def setup_openai_api():
     """
@@ -86,6 +88,8 @@ class AecBot:
         self.llm_thread:Thread|None = None
         self.llm_run:int = 0
 
+        self.tts:TtsEngine = TtsEngine( speaker=8 )
+
     def start(self):
         if os.path.exists(self.aec_coeff_path):
             try:
@@ -118,6 +122,12 @@ class AecBot:
             self.recorder.save_aec_coeff(self.aec_coeff_path)
         except:
             pass
+
+    def add_talk(self,mesg):
+        print(f"[AI]{mesg.strip()}")
+        aaa,model = self.tts._text_to_audio_by_voicevox(mesg,sampling_rate=self.sample_rate)
+        if aaa is not None:
+            self.recorder.play(aaa, sr=self.sample_rate)
 
     def _aaa(self,mesg):
         print(f"[AI]{mesg.strip()}")
@@ -265,12 +275,12 @@ class AecBot:
                 if delta_response:
                     sentense += delta_response
                     if delta_response.find("。")>=0:
-                        self._aaa(sentense)
+                        self.add_talk(sentense)
                         ai_response += sentense
                         sentense = ''
         finally:
             if not self._is_llm_abort() and len(sentense)>0:
-                self._aaa(sentense)
+                self.add_talk(sentense)
                 ai_response += sentense
 
             # 履歴に記録します。
@@ -345,6 +355,20 @@ def main_coeff_plot():
     plt.plot(aec_coeff, label='aec_coeff', alpha=0.5)
     plt.legend()
     plt.show()
+def main_cui(stdscr):
+    stdscr.clear()
+    stdscr.addstr(0, 0, "こんにちは、これはcursesのデモです")
+    stdscr.refresh()
+    stdscr.getch()
+
+def main_talk():
+    bot = AecBot()
+    bot.start()
+    bot.add_talk( 'こんにちは、これはcursesのデモです')
+    time.sleep(5)
+    bot.stop()
 if __name__ == "__main__":
+    # curses.wrapper(main_cui)
+    # main_talk()
     main()
-    main_coeff_plot()
+    #main_coeff_plot()

@@ -1,5 +1,6 @@
 import sys,os
 from typing import TypeVar
+from io import BytesIO
 import wave
 import numpy as np
 from numpy.typing import NDArray
@@ -116,9 +117,14 @@ def save_wave(filename:str, data:AudioF32, *, sampling_rate:int, ch:int):
         else:
             wf.writeframes( (data*32767).astype(np.int16).tobytes())
 
-def load_wave(filename, *, sampling_rate:int) ->AudioF32:
-    # 再生音をnumpy配列に読み込む
-    with wave.open(filename, 'rb') as iw:
+def load_wave(data:str|bytes, sampling_rate:int) ->AudioF32:
+    if isinstance(data,bytes):
+        input_file = BytesIO(data)
+    elif isinstance(data,str):
+        input_file = data
+    else:
+        return EmptyF32
+    with wave.open(input_file,'rb') as iw:
         # データ読み出し
         wave_bytes:bytes = iw.readframes(iw.getnframes())
         if iw.getsampwidth()!=2:
