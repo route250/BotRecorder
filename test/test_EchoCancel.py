@@ -44,7 +44,7 @@ def main_get():
 
     _,_ = recorder.get_raw_audio()
     recorder.play_marker() #
-    recorder.play(playback_data7)
+    recorder.play('test',playback_data7)
     if mode==1:
         title='seg'
         while True:

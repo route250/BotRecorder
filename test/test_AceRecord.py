@@ -209,7 +209,7 @@ def main_x():
         #save_wave( f'tmp/voice{i:02d}_{g}.wav', audio_i16, sampling_rate=sample_rate, ch=1)
         # 音声データを再生
         time.sleep(1.5)
-        recorder.play(audio_i16,sr=sample_rate)
+        recorder.play(g,audio_i16,sr=sample_rate)
 
         # 再生が完了するまで待機
         while True:

@@ -1,16 +1,18 @@
 import sys,os
 import time
 import traceback
-from threading import Lock
 from typing import NamedTuple
+from queue import Queue
 import math
 import audioop
 
 import numpy as np
 from numpy.typing import NDArray
 import sounddevice as sd
+from sounddevice import CallbackFlags
 from silero_vad import load_silero_vad
 import torch
+torch.backends.nnpack.set_flags(False)
 
 sys.path.append(os.getcwd())
 from BotVoice.rec_util import AudioI16, AudioF32, EmptyF32, np_append, save_wave, load_wave, signal_ave, sin_signal
@@ -247,13 +249,22 @@ class AecRes(NamedTuple):
     vad:AudioF32
     errors:AudioF32
 
+class RecData(NamedTuple):
+    mic:AudioI16
+    spk:AudioF32
+
+class SpkData:
+    def __init__(self,data:list[SpkPair], text:str):
+        self.seq: list[SpkPair] = data
+        self.text: str = text
+
 class AecRecorder:
 
     H1:int=440
     H2:int=880
 
     def __init__(self, device=None, pa_chunk_size:int=3200, sample_rate:int=16000):
-        self._lock = Lock()
+
         self.device = device
         self.ds_chunk_size = pa_chunk_size
         self.sample_rate = sample_rate
@@ -266,15 +277,17 @@ class AecRecorder:
         self.zeros_i16 = np.zeros( self.ds_chunk_size, dtype=np.int16 )
 
         # 再生データ
-        self.play_data:list[SpkPair] = []
+        self.spk_q:Queue[SpkData] = Queue()
+        self.play_spk:SpkData|None = None
+        self.play_list:list[SpkPair] = []
         self.play_pos:int = 0
         self._is_playing = False
         self._post_play_count:int = 0
         self._post_play_num:int = 0
 
         # 録音データ
+        self.mic_q:Queue[RecData] = Queue()
         self.mic_boost:float = 1.0
-        self.mic_buffer:list[AudioI16] = []
         self._detect_num:int = int( 2 * self.sample_rate / self.ds_chunk_size )
         self.spk_buffer:list[AudioF32] = [self.zeros_f32] * self._detect_num
 
@@ -331,25 +344,22 @@ class AecRecorder:
             self.set_aec_coeff(coeff)
 
     def is_playing(self) ->int:
-        with self._lock:
-            if self._is_playing:
-                return 1
+        if self._is_playing:
+            return 1
         return 0
 
     def is_active(self) ->bool:
-        with self._lock:
-            if self._stream:
-                return self._stream.active
-            else:
-                print("not open?")
-                return False
+        if self._stream:
+            return self._stream.active
+        else:
+            print("not open?")
+            return False
     
     def is_stopped(self):
-        with self._lock:
-            if self._stream:
-                return self._stream.closed
-            else:
-                return True
+        if self._stream:
+            return self._stream.closed
+        else:
+            return True
 
     def start(self):
         """録音・再生を同時に開始"""
@@ -369,14 +379,11 @@ class AecRecorder:
 
     def play_marker(self):
         """再生データを設定し、再生を開始"""
-        with self._lock:
-            if len(self.play_data)>0:
-                self.play_data.append( self.zeros_pair )
-            self.play_data.append( self.marker_pair )
-            self.play_data.append( self.zeros_pair )
-            self._is_playing = True
+        data:list[SpkPair] = [ self.zeros_pair, self.marker_pair, self.zeros_pair ]
+        self.spk_q.put( SpkData(data,'') )
+        self._is_playing = True
 
-    def play(self, audio:AudioF32|None, sr:int|None=None ):
+    def play(self, text:str, audio:AudioF32|None, sr:int|None=None ):
         """再生データを設定し、再生を開始"""
         print("play ",end="")
         audio_f32:AudioF32 = to_f32(audio)
@@ -392,112 +399,147 @@ class AecRecorder:
             size:int = len(audio_f32)
             step:int = self.ds_chunk_size
             data:list[SpkPair] = [ SpkPair(play_f32[s:s+step],play_i16[s:s+step]) for s in range(0,size,step) ]
-            with self._lock:
-                self.play_data.extend( data )
-                self._is_playing = True
+            self.spk_q.put( SpkData(data, text ) )
+            self._is_playing = True
 
     def cancel(self):
         """再生データを設定し、再生を開始"""
         print("canlel ",end="")
-        with self._lock:
-            self.play_data = []
-
-    def _callback(self, inbytes:np.ndarray, outdata:np.ndarray, frames:int, time, status ) ->None:
         try:
-            if frames != self.ds_chunk_size:
-                print(f" invalid callback frames {frames} {status}")
-            mic_data:AudioI16 = inbytes[:,0].copy()
-            with self._lock:
-                self.mic_buffer.append( mic_data )
-                if 0<=self._detect_cnt:
-                    if self._detect_cnt<self._detect_num:
-                        self._detectbuf += mic_data.tobytes()
-                        pos,factor = audioop.findfit( self._detectbuf, self.marker_bytes ) if self._detect_cnt>2 else (0,0.0)
-                        if self._detect_cnt>5 and 0<=pos and pos==self._before_pos:
-                            tmp = self._detectbuf[pos*2:pos*2+self.ds_chunk_size]
-                            lo,hi = audioop.minmax( tmp, 2 )
-                            maxlv = (abs(lo)+abs(hi))/2/32768
-                            self.mic_boost = self._marker_lv/maxlv if maxlv>0 else 1
-                            delay:int = pos + self.ds_chunk_size
-                            print(f"[SND]delay: pos:{pos} OK {delay} factor:{factor} maxlv:{maxlv} boost:{self.mic_boost}")
-                            self.delay_samples = delay
-                            self._detect_cnt=-1
-                            self._detectbuf=b''
-                        else:
-                            print(f"[SND]delay: pos:{pos}")
-                            self._detect_cnt+=1
-                            self._before_pos = pos
-                    else:
-                        self._detect_cnt = -1
-                        self.delay_samples = 0
-                        self._detectbuf=b''
-                        print(f"[SND]delay:NotFound")
+            while self.spk_q.qsize()>0:
+                self.spk_q.get_nowait()
+        except:
+            pass
 
-                pax = self.play_data
-                if len(pax)>0:
-                    self._post_play_count = self._post_play_num
-                    # 再生データが設定されている場合は再生
-                    play = pax.pop(0)
-                    if play is self.marker_pair:
-                        self._detect_cnt = 0
-                        self._before_pos = -1
-                        self._detectbuf = b''
-                        print(f"[SND]delay:Start")
-                else:
-                    if self._post_play_count>0:
-                        self._post_play_count-=1
+    def _callback(self, inbytes:np.ndarray, outdata:np.ndarray, frames:int, ctime, status: CallbackFlags ) ->None:
+        if status.input_overflow:
+            print("[input_overflow]")
+        if status.output_underflow:
+            print("[output_underflow]")
+        # inbytesのサイズは Streamのblocksizeに一致する
+        st:float = time.time()
+        try:
+            # もらったデータはコピーしないと後で上書きされちゃう
+            mic_data:AudioI16 = inbytes[:,0].copy()
+
+            if 0<=self._detect_cnt:
+                # 位置検出実行中
+                if self._detect_cnt<self._detect_num:
+                    self._detectbuf += mic_data.tobytes()
+                    pos,factor = audioop.findfit( self._detectbuf, self.marker_bytes ) if self._detect_cnt>5 else (0,0.0)
+                    if self._detect_cnt>5 and 0<=pos and pos==self._before_pos:
+                        tmp = self._detectbuf[pos*2:pos*2+self.ds_chunk_size]
+                        lo,hi = audioop.minmax( tmp, 2 )
+                        maxlv = (abs(lo)+abs(hi))/2/32768
+                        self.mic_boost = self._marker_lv/maxlv if maxlv>0 else 1
+                        delay:int = pos + self.ds_chunk_size
+                        print(f"[SND]delay: pos:{pos} OK {delay} factor:{factor} maxlv:{maxlv} boost:{self.mic_boost}")
+                        self.delay_samples = delay
+                        self._detect_cnt=-1
+                        self._detectbuf=b''
                     else:
-                        self._is_playing = False
-                    play = self.zeros_pair
-                self.spk_buffer.append( play.f32 )
+                        print(f"[SND]delay: pos:{pos}")
+                        self._detect_cnt+=1
+                        self._before_pos = pos
+                else:
+                    self._detect_cnt = -1
+                    self.delay_samples = 0
+                    self._detectbuf=b''
+                    print(f"[SND]delay:NotFound")
+
+            try:
+                if self.play_spk is None and self.spk_q.qsize()>0:
+                    self.play_spk = self.spk_q.get_nowait()
+                    self.play_list = self.play_spk.seq
+                    self.play_pos = 0
+            except:
+                print("!",end="")
+                pass
+            play:SpkPair|None = None
+            if self.play_spk is not None:
+                if self.play_pos<len(self.play_list):
+                    play = self.play_list[self.play_pos]
+                    self.play_pos += 1
+                    if self.play_pos>=len(self.play_list):
+                        self.play_spk = None
+            if play is not None:
+                # 再生データが設定されている場合は再生
+                self._post_play_count = self._post_play_num
+                if play is self.marker_pair:
+                    # 位置検出データの開始
+                    self._detect_cnt = 0
+                    self._before_pos = -1
+                    self._detectbuf = b''
+                    print(f"[SND]delay:Start")
+            else:
+                # 再生してない
+                if self._post_play_count>0:
+                    self._post_play_count-=1
+                else:
+                    self._is_playing = False
+                play = self.zeros_pair
 
             outdata[:,0] = play.i16[:]
+            self.mic_q.put( RecData(mic_data,play.f32))
         except:
             traceback.print_exc()
         finally:
+            et:float = time.time()
+            tt = et-st
+            if tt>0.01:
+                print(f"[{tt:.3f}]", end="")
             self._callback_cnt+=1
 
-    def copy_raw_buffer(self) ->tuple[AudioF32,AudioF32]:
-        with self._lock:
-            e:list[AudioF32]=self.spk_buffer.copy()
-            m:list[AudioI16]=self.mic_buffer.copy()
-        mic_f32:AudioF32 = i16_to_f32( np.concatenate( m ) )
-        spk_f32:AudioF32 = np.concatenate( e )[-len(mic_f32):]
-        return mic_f32,spk_f32
+    def get_raw_audio(self) ->tuple[AudioF32,AudioF32]:
+        mic_buf:list[AudioI16] = []
+        spk_sz:int = len(self.spk_buffer)
+        try:
+            rec:RecData = self.mic_q.get(timeout=0.2)
+            mic_buf.append(rec.mic)
+            self.spk_buffer.append(rec.spk)
+            while True:
+                rec:RecData = self.mic_q.get_nowait()
+                mic_buf.append(rec.mic)
+                self.spk_buffer.append(rec.spk)
+        except:
+            pass
 
-    def copy_raw_audio(self) ->tuple[AudioF32,AudioF32]:
-        with self._lock:
-            mic_buf:list[AudioI16]=self.mic_buffer.copy()
-            delay_samples = max(0,self.delay_samples+self.aec_offset)
-            x:int = int( (delay_samples+len(self.aec_w))/self.ds_chunk_size ) + 1
-            spk_buf: list[AudioF32] = self.spk_buffer[-len(mic_buf)-x:]
-        mic_f32:AudioF32 = i16_to_f32( np.concatenate( mic_buf ) ) * self.mic_boost
-        spk_f32:AudioF32 = np.concatenate( spk_buf )
-        spk_f32 = spk_f32[-len(mic_f32)-delay_samples-len(self.aec_w):len(spk_f32)-delay_samples]
-        return mic_f32,spk_f32
-
-    def get_raw_audio(self,keep:bool=False) ->tuple[AudioF32,AudioF32]:
-        with self._lock:
-            if self._detect_cnt>=0:
-                return EmptyF32,EmptyF32
-            if keep:
-                mic_buf:list[AudioI16]=self.mic_buffer.copy()
-            else:
-                mic_buf:list[AudioI16]=self.mic_buffer
-                self.mic_buffer = []
-
-            delay_samples = max(0,self.delay_samples+self.aec_offset)
-            x:int = int( (delay_samples+len(self.aec_w))/self.ds_chunk_size ) + 1
-            spk_buf: list[AudioF32] = self.spk_buffer[-len(mic_buf)-x:].copy()
-            if not keep:
-                self.spk_buffer = self.spk_buffer[-self._detect_num:]
+        delay_samples = max(0,self.delay_samples+self.aec_offset)
+        x:int = int( (delay_samples+len(self.aec_w))/self.ds_chunk_size ) + 1
+        spk_buf: list[AudioF32] = self.spk_buffer[-len(mic_buf)-x:]
 
         if len(mic_buf)==0:
             return EmptyF32, EmptyF32
         mic_f32:AudioF32 = i16_to_f32( np.concatenate( mic_buf ) ) * self.mic_boost
         spk_f32:AudioF32 = np.concatenate( spk_buf )
         spk_f32 = spk_f32[-len(mic_f32)-delay_samples-len(self.aec_w):len(spk_f32)-delay_samples]
+
+        self.spk_buffer = [s for s in self.spk_buffer[-spk_sz:]]
+
         return mic_f32,spk_f32
+
+    # def get_raw_audiopppp(self,keep:bool=False) ->tuple[AudioF32,AudioF32]:
+    #     with self._lock:
+    #         if self._detect_cnt>=0:
+    #             return EmptyF32,EmptyF32
+    #         if keep:
+    #             mic_buf:list[AudioI16]=self.mic_buffer.copy()
+    #         else:
+    #             mic_buf:list[AudioI16]=self.mic_buffer
+    #             self.mic_buffer = []
+
+    #         delay_samples = max(0,self.delay_samples+self.aec_offset)
+    #         x:int = int( (delay_samples+len(self.aec_w))/self.ds_chunk_size ) + 1
+    #         spk_buf: list[AudioF32] = self.spk_buffer[-len(mic_buf)-x:].copy()
+    #         if not keep:
+    #             self.spk_buffer = self.spk_buffer[-self._detect_num:]
+
+    #     if len(mic_buf)==0:
+    #         return EmptyF32, EmptyF32
+    #     mic_f32:AudioF32 = i16_to_f32( np.concatenate( mic_buf ) ) * self.mic_boost
+    #     spk_f32:AudioF32 = np.concatenate( spk_buf )
+    #     spk_f32 = spk_f32[-len(mic_f32)-delay_samples-len(self.aec_w):len(spk_f32)-delay_samples]
+    #     return mic_f32,spk_f32
     
     def get_aec_audio(self) ->AecRes:
         mic_f32, spk_f32 = self.get_raw_audio()

@@ -8,8 +8,9 @@ import requests
 from requests.adapters import HTTPAdapter
 import httpx
 
-from rec_util import AudioF32, load_wave
-from net_utils import find_first_responsive_host
+sys.path.append(os.getcwd())
+from BotVoice.rec_util import AudioF32, load_wave
+from BotVoice.net_utils import find_first_responsive_host
 # from ..translate import convert_to_katakana, convert_kuten
 
 from logging import getLogger
@@ -250,7 +251,7 @@ class TtsEngine:
 
 def main():
     tts:TtsEngine = TtsEngine()
-    a,model = tts._text_to_audio_by_voicevox('あいうえお')
+    a,model = tts._text_to_audio_by_voicevox('あいうえお',sampling_rate=16000)
     if a is not None:
         print( min(a) )
 

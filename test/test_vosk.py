@@ -31,6 +31,7 @@ from BotVoice.rec_util import AudioI8, AudioI16, AudioF32, EmptyF32, np_append, 
 from BotVoice.segments import TranscribRes, Segment, Word
 from BotVoice.bot_audio import BotAudio,RATE,CHUNK_SEC,CHUNK_LEN
 from BotVoice.voice_base import VoiceBase
+from BotVoice.text_to_voice import TtsEngine
 
 def setup_openai_api():
     """
@@ -89,6 +90,8 @@ class AecBot:
         self.llm_thread:Thread|None = None
         self.llm_run:int = 0
 
+        self.tts:TtsEngine = TtsEngine( speaker=8 )
+
     def start(self):
         if os.path.exists(self.aec_coeff_path):
             try:
@@ -124,10 +127,11 @@ class AecBot:
         except:
             pass
 
-    def _aaa(self,mesg):
+    def add_talk(self,mesg):
         print(f"[AI]{mesg.strip()}")
-        sr, audio_i16 = self.model.infer(text=mesg, style_weight=0.0 )
-        self.recorder.play(audio_i16, sr=sr )
+        aaa,model = self.tts._text_to_audio_by_voicevox(mesg,sampling_rate=self.sample_rate)
+        if aaa is not None:
+            self.recorder.play(mesg,aaa, sr=self.sample_rate)
 
     def th_transcrib(self):
         try:
@@ -234,12 +238,12 @@ class AecBot:
                 if delta_response:
                     sentense += delta_response
                     if delta_response.find("。")>=0:
-                        self._aaa(sentense)
+                        self.add_talk(sentense)
                         ai_response += sentense
                         sentense = ''
         finally:
             if not self._is_llm_abort() and len(sentense)>0:
-                self._aaa(sentense)
+                self.add_talk(sentense)
                 ai_response += sentense
 
             # 履歴に記録します。
