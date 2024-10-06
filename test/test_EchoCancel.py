@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 import matplotlib.pyplot as plt
 
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, AecRes, nlms_echo_cancel2, save_and_plot
+from BotVoice.ace_recorder import AecRecorder, AecRes, nlms_echo_cancel2, plot_aecrec
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info
 
 #----------------------
@@ -66,7 +66,7 @@ def main_get():
         print("---")
 
     filename=f"tmp/out_aec_{title}.npz"
-    save_and_plot( filename, logdata, show=True )
+    plot_aecrec( logdata, filename=filename, show=True )
 
 def main_file():
 

@@ -17,7 +17,7 @@ from style_bert_vits2.nlp import bert_models
 from style_bert_vits2.constants import Languages
 from style_bert_vits2.tts_model import TTSModel
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, AecRes, save_and_plot
+from BotVoice.ace_recorder import AecRecorder, AecRes, plot_aecrec
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info, sin_signal
 
 # style-vert-vits2のログを設定
@@ -223,7 +223,7 @@ def main_x():
     print(wres)
 
     print("---")
-    save_and_plot( 'tmp/out_aec_long', logdata, show=True )
+    plot_aecrec( logdata, filename='tmp/out_aec_long', show=True )
 
 if __name__ == "__main__":
     main_x()

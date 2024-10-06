@@ -232,14 +232,6 @@ class SpkPair(NamedTuple):
     f32:AudioF32
     i16:AudioI16
 
-# class AecRes(NamedTuple):
-#     audio:AudioF32
-#     raw:AudioF32
-#     spk:AudioF32
-#     mask:AudioF32
-#     vad:AudioF32
-#     errors:AudioF32
-
 class AecRes:
 
     @staticmethod
@@ -673,10 +665,11 @@ def list_microphones():
 
 #     p.terminate()
 
-def save_and_plot( filename:str, rec:AecRes, show:bool=False ):
-    basename = os.path.splitext(filename)[0]
-    print(f"[OUT] save {basename} {audio_info(rec.audio,sample_rate=rec.sampling_rate)}")
-    rec.save( filename )
+def plot_aecrec( rec:AecRes, *, filename:str|None=None, show:bool=False ):
+    basename:str|None = os.path.splitext(filename)[0] if filename is not None else None
+    if basename is not None:
+        print(f"[OUT] save {basename} {audio_info(rec.audio,sample_rate=rec.sampling_rate)}")
+        rec.save( filename )
 
     max_y = round( 0.05 + max( np.max(np.abs(rec.raw)), np.max(np.abs(rec.spk)), np.max(np.abs(rec.audio)) ), 1 )
     x1 = np.array( range(len(rec.raw)) )
@@ -690,7 +683,8 @@ def save_and_plot( filename:str, rec:AecRes, show:bool=False ):
     plt.plot(x2,rec.spk, label='Spk', alpha=0.2)
     plt.ylim(-max_y,max_y)
     plt.legend()
-    plt.savefig(f'{basename}_spk.png',dpi=300)
+    if basename is not None:
+        plt.savefig(f'{basename}_spk.png',dpi=300)
 
     # 図の作成
     fig, ax1 = plt.subplots(figsize=(12, 3))
@@ -708,8 +702,8 @@ def save_and_plot( filename:str, rec:AecRes, show:bool=False ):
     ax2.set_ybound(0.0,1.0)
     ax2.set_ylabel('rate')
     ax2.legend(loc='upper right')
-    # 画像を保存
-    plt.savefig(f'{basename}_lms.png', dpi=300)
+    if basename is not None:
+        plt.savefig(f'{basename}_lms.png', dpi=300)
 
     # 図の作成
     fig, ax1 = plt.subplots(figsize=(12, 3))
@@ -723,9 +717,9 @@ def save_and_plot( filename:str, rec:AecRes, show:bool=False ):
     ax2.set_ybound(0.0,1.0)
     ax2.set_ylabel('Mask')
     ax2.legend(loc='upper right')
-    # 画像を保存
-    plt.savefig(f'{basename}_errors.png', dpi=300)
+    if basename is not None:
+        plt.savefig(f'{basename}_errors.png', dpi=300)
 
     # グラフを表示
-    if show:
+    if basename is None or show:
         plt.show()
