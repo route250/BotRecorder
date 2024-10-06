@@ -17,9 +17,8 @@ from style_bert_vits2.nlp import bert_models
 from style_bert_vits2.constants import Languages
 from style_bert_vits2.tts_model import TTSModel
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, AecRes, nlms_echo_cancel2
+from BotVoice.ace_recorder import AecRecorder, AecRes, save_and_plot
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info, sin_signal
-from test_EchoCancel import save_and_plot
 
 # style-vert-vits2のログを設定
 import loguru
@@ -192,18 +191,13 @@ def main_x():
 
     recorder:AecRecorder = AecRecorder( device=None, pa_chunk_size=pa_chunk_size, sample_rate=sample_rate)
 
-    mic_f32:AudioF32 = np.zeros( 0, dtype=np.float32 )
-    lms_f32:AudioF32 = mic_f32
-    spk_f32:AudioF32 = mic_f32
-    mask_f32:AudioF32 = mic_f32
-    vad_f32:AudioF32 = mic_f32
-    errors_f32:AudioF32 = mic_f32
+    logdata:AecRes = AecRes.empty(sample_rate)
 
     recorder.start()
     time.sleep(0.5)
     recorder.play_marker()
 
-    for i,g in enumerate(files):
+    for i,g in enumerate(files[:5]):
         audio_i16 = load_wave( g, sampling_rate=sample_rate )
         print(g)
         #save_wave( f'tmp/voice{i:02d}_{g}.wav', audio_i16, sampling_rate=sample_rate, ch=1)
@@ -216,28 +210,20 @@ def main_x():
             time.sleep(0.5)
             print("+",end="")
             rec:AecRes = recorder.get_aec_audio()
-            mic_f32 = np.concatenate( (mic_f32,rec.raw) )
-            lms_f32 = np.concatenate( (lms_f32,rec.audio) )
-            if len(spk_f32)==0:
-                spk_f32 = np.concatenate( (spk_f32,rec.spk) )
-            else:
-                spk_f32 = np.concatenate( (spk_f32,rec.spk[-len(rec.audio):]) )
-            mask_f32 = np.concatenate( (mask_f32,rec.mask) )
-            vad_f32 = np.concatenate( (vad_f32,rec.vad) )
-            errors_f32 = np.concatenate( (errors_f32,rec.errors) )
+            logdata += rec
             if not recorder.is_playing():
                 break
 
     print("---whisper raw mic")
-    wres = w_transcrib(mic_f32,model_size)
+    wres = w_transcrib(rec.audio,model_size)
     print(wres)
 
     print("---whisper lms mic")
-    wres = w_transcrib(lms_f32,model_size)
+    wres = w_transcrib(rec.audio,model_size)
     print(wres)
 
     print("---")
-    save_and_plot( 'long', mic_f32, spk_f32, lms_f32, mask_f32, vad_f32, errors_f32, sample_rate )
+    save_and_plot( 'tmp/out_aec_long', logdata, show=True )
 
 if __name__ == "__main__":
     main_x()

@@ -25,7 +25,7 @@ from openai._streaming import Stream
 import mlx_whisper
 
 sys.path.append(os.getcwd())
-from BotVoice.ace_recorder import AecRecorder, evaluate_concentration
+from BotVoice.ace_recorder import AecRecorder, evaluate_convergence
 from BotVoice.rec_util import AudioF32, save_wave, load_wave, audio_info, sin_signal
 from BotVoice.rec_util import AudioI8, AudioI16, AudioF32, EmptyF32, np_append, save_wave, load_wave, signal_ave, sin_signal
 from BotVoice.segments import TranscribRes, Segment, Word
@@ -127,12 +127,12 @@ class AecBot:
         print(f"[AI]{mesg.strip()}")
         aaa,model = self.tts._text_to_audio_by_voicevox(mesg,sampling_rate=self.sample_rate)
         if aaa is not None:
-            self.recorder.play(aaa, sr=self.sample_rate)
+            self.recorder.play(mesg,aaa, sr=self.sample_rate)
 
     def _aaa(self,mesg):
         print(f"[AI]{mesg.strip()}")
         sr, audio_i16 = self.model.infer(text=mesg, style_weight=0.0 )
-        self.recorder.play(audio_i16, sr=sr )
+        self.recorder.play(mesg,audio_i16, sr=sr )
 
     def transcrib(self, audio_np:AudioF32, debug:bool=False) ->TranscribRes:
         st = time.time()
@@ -177,7 +177,7 @@ class AecBot:
 
                 # coeff_diff_avg = round( np.mean(np.abs(current_coeff-prev_coeff)), 3 )
                 coeff_diff_avg = round( np.count_nonzero(mask)/len(mask), 1 )
-                concentration = round( evaluate_concentration(current_coeff),1 )
+                concentration = round( evaluate_convergence(current_coeff),1 )
                 if coeff_diff_avg!=prev_coeff_diff or concentration!=prev_concentration:
                     print(f" coeff:{coeff_diff_avg:.3f} concentration:{concentration:.2f}", end="")
                     prev_coeff_diff = coeff_diff_avg
@@ -349,7 +349,7 @@ def main_coeff_plot():
             aec_coeff = self.recorder.get_aec_coeff()
         except:
             pass
-    abs_coeff = evaluate_concentration(aec_coeff)
+    abs_coeff = evaluate_convergence(aec_coeff)
     print(f" {abs_coeff}")
     plt.figure()
     plt.plot(aec_coeff, label='aec_coeff', alpha=0.5)

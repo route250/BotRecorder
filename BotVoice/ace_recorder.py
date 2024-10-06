@@ -157,7 +157,7 @@ def nlms_echo_cancel2(mic: AudioF32, spk_f32: AudioF32, mu: float, w: NDArray[np
     cancelled_signal = np.zeros(mic_len,dtype=np.float32)
     # 誤差を記録する配列
     errors = np.zeros(mic_len,dtype=np.float32)
-    mask = np.ones(mic_len,dtype=np.float32)
+    convergence = np.ones(mic_len,dtype=np.float32)
 
     spk_f64 = spk_f32.astype(np.float64)
 
@@ -181,11 +181,8 @@ def nlms_echo_cancel2(mic: AudioF32, spk_f32: AudioF32, mu: float, w: NDArray[np
         spk_on[n] = 1.0 if r[n]>0.9 else 0.0
     mu_factor = np.clip( mu/factor, mu/100, mu ) * spk_on
 
-    concentration:float = 0.0
-    cw:int = 500
-    cx:int = 0
-    c_hi:float = 3.5
-    c_lo:float = 3.0
+    c_width:int = 512
+    c_pos:int = 0
     c_val = 0.0
     # LMSアルゴリズムのメインループ
     for mu3 in (mu,):
@@ -195,7 +192,7 @@ def nlms_echo_cancel2(mic: AudioF32, spk_f32: AudioF32, mu: float, w: NDArray[np
                 # スピーカー出力がなければ処理しない
                 if np.count_nonzero(spk_slice)==0:
                     cancelled_signal[n] = mic[n]
-                    c_val = 1.0
+                    c_pos = 0
                     continue
                 # スピーカー出力 spk_slice とフィルタ係数 w の内積によるフィルタ出力 y(n) を計算
                 y = np.dot(w, spk_slice)
@@ -205,49 +202,133 @@ def nlms_echo_cancel2(mic: AudioF32, spk_f32: AudioF32, mu: float, w: NDArray[np
                 cancelled_signal[n] = e
                 errors[n] = e
                 # 収束の程度を判定
-                if cx==0:
-                    concentration = evaluate_concentration( w )
-                cx = (cx+1)%cw
-                if concentration<c_lo:
-                    c_val = 0.0
-                elif concentration>c_hi:
-                    c_val = 1.0
-                mask[n] = c_val
+                if c_pos==0:
+                    c_val = evaluate_convergence( w )
+                c_pos = (c_pos+1)%c_width
+                convergence[n] = c_val
                 # フィルタ係数の更新式
                 factor = mu_factor[n] # np.dot(spk_slice, spk_slice)
                 w[:] = w + (e*factor) * spk_slice
 
-    return np.clip(cancelled_signal,-0.99,0.99),mask,errors
+    return np.clip(cancelled_signal,-0.99,0.99),convergence,errors
 
-def evaluate_concentration(coeff:NDArray[np.float64], window_factor=6) ->float:
+def evaluate_convergence(coeff:NDArray[np.float64], window_factor=6) ->float:
     num_taps = len(coeff)
     # widthをnum_taps/6の半分に設定
     half_width = int(num_taps / window_factor / 2)
     coeff_abs = np.abs(coeff)
-    max_index_abs = np.argmax(coeff_abs)
+    peak_index = np.argmax(coeff_abs)
     
-    start_index = max(0, max_index_abs - half_width)
-    end_index = min(max_index_abs + half_width, num_taps)
-    window_size = end_index - start_index
-    scaling_factor = num_taps / window_size
+    start_index = max(0, peak_index - half_width)
+    end_index = min(peak_index + half_width, num_taps)
     
-    local_sum = np.sum(coeff_abs[start_index:end_index])
-    scaled_total_sum = np.sum(coeff_abs) / scaling_factor
+    peak_sum = np.sum(coeff_abs[start_index:end_index])
+    total_sum = np.sum(coeff_abs)
     
-    rate = local_sum / scaled_total_sum
-    return rate
+    convergence = peak_sum / total_sum
+    return convergence
 
 class SpkPair(NamedTuple):
     f32:AudioF32
     i16:AudioI16
 
-class AecRes(NamedTuple):
-    audio:AudioF32
-    raw:AudioF32
-    spk:AudioF32
-    mask:AudioF32
-    vad:AudioF32
-    errors:AudioF32
+# class AecRes(NamedTuple):
+#     audio:AudioF32
+#     raw:AudioF32
+#     spk:AudioF32
+#     mask:AudioF32
+#     vad:AudioF32
+#     errors:AudioF32
+
+class AecRes:
+
+    @staticmethod
+    def empty(sampling_rate):
+        return AecRes(EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,sampling_rate=sampling_rate)
+
+    def __init__(self,audio:AudioF32, raw:AudioF32, spk:AudioF32, mask:AudioF32, vad:AudioF32, convergence:AudioF32, errors:AudioF32, *, sampling_rate:int=16000 ):
+        self.sampling_rate = sampling_rate
+        self.audio:AudioF32 = audio
+        self.raw:AudioF32 = raw
+        self.spk:AudioF32 = spk
+        self.mask:AudioF32 = mask
+        self.vad:AudioF32 = vad
+        self.convergence:AudioF32 = convergence
+        self.errors:AudioF32 = errors
+
+    def clear(self):
+        self.audio = EmptyF32
+        self.raw = EmptyF32
+        self.spk = EmptyF32
+        self.mask = EmptyF32
+        self.vad = EmptyF32
+        self.convergence = EmptyF32
+        self.errors = EmptyF32
+
+    def __len__(self):
+        return len(self.audio)
+
+    def duration(self):
+        return len(self.audio)/self.sampling_rate
+
+    def __iadd__(self, res):
+        if self.audio is None or len(self.audio) == 0:
+            self.audio = res.audio
+            self.raw = res.raw
+            self.spk = res.spk
+            self.mask = res.mask
+            self.vad = res.vad
+            self.convergence = res.convergence
+            self.errors = res.errors
+        else:
+            self.audio = np.concatenate((self.audio, res.audio))
+            self.raw = np.concatenate((self.raw, res.raw))
+            self.spk = np.concatenate((self.spk, res.spk[-len(res.audio):]))
+            self.mask = np.concatenate((self.mask, res.mask))
+            self.vad = np.concatenate((self.vad, res.vad))
+            self.convergence = np.concatenate((self.convergence, res.convergence))
+            self.errors = np.concatenate((self.errors, res.errors))
+        return self
+
+    def __add__(self, res):
+        new_audio = np.concatenate((self.audio, res.audio)) if self.audio is not None else res.audio
+        new_raw = np.concatenate((self.raw, res.raw)) if self.raw is not None else res.raw
+        new_spk = np.concatenate((self.spk, res.spk[-len(res.audio):])) if self.spk is not None else res.spk
+        new_mask = np.concatenate((self.mask, res.mask)) if self.mask is not None else res.mask
+        new_vad = np.concatenate((self.vad, res.vad)) if self.vad is not None else res.vad
+        new_convergence = np.concatenate((self.convergence, res.convergence)) if self.convergence is not None else res.convergence
+        new_errors = np.concatenate((self.errors, res.errors)) if self.errors is not None else res.errors
+
+        return AecRes(new_audio, new_raw, new_spk, new_mask, new_vad, new_convergence, new_errors, sampling_rate=self.sampling_rate)
+
+    def save(self, filename):
+        # npzでファイルに保存する
+        basename = os.path.splitext(filename)[0]
+        npzname = basename+".npz"
+        np.savez(npzname, sampling_rate=self.sampling_rate, audio=self.audio, raw=self.raw, spk=self.spk, mask=self.mask, vad=self.vad, convergence=self.convergence, errors=self.errors)
+        rawname = basename+"_mic.wav"
+        save_wave(rawname,self.raw,ch=1,sampling_rate=self.sampling_rate)
+        audioname = basename+"_lms.wav"
+        save_wave(audioname,self.audio,ch=1,sampling_rate=self.sampling_rate)
+        audioname = basename+".wav"
+        save_wave(audioname,self.audio*self.mask,ch=1,sampling_rate=self.sampling_rate)
+
+    def load(self, filename):
+        # npzファイルからロードする
+        try:
+            data = np.load(filename)
+            self.sampling_rate = int(data['sampling_rate'])
+            self.audio = data['audio']
+            self.raw = data['raw']
+            self.spk = data['spk']
+            self.mask = data['mask']
+            self.vad = data['vad']
+            self.convergence = data['convergence']
+            self.errors = data['errors']
+            if len(self.audio)!=len(self.raw) or len(self.audio)!=len(self.mask):
+                print(f"Error loading file {filename} invalid array length")
+        except (IOError, ValueError) as e:
+            print(f"Error loading file {filename}: {e}")
 
 class RecData(NamedTuple):
     mic:AudioI16
@@ -277,11 +358,12 @@ class AecRecorder:
         self.zeros_i16 = np.zeros( self.ds_chunk_size, dtype=np.int16 )
 
         # 再生データ
+        self._spk_pause:bool = False
         self.spk_q:Queue[SpkData] = Queue()
+        self.end_q:Queue[SpkData] = Queue()
         self.play_spk:SpkData|None = None
         self.play_list:list[SpkPair] = []
         self.play_pos:int = 0
-        self._is_playing = False
         self._post_play_count:int = 0
         self._post_play_num:int = 0
 
@@ -344,7 +426,7 @@ class AecRecorder:
             self.set_aec_coeff(coeff)
 
     def is_playing(self) ->int:
-        if self._is_playing:
+        if self._post_play_count>0 or self.spk_q.qsize()>0:
             return 1
         return 0
 
@@ -381,7 +463,6 @@ class AecRecorder:
         """再生データを設定し、再生を開始"""
         data:list[SpkPair] = [ self.zeros_pair, self.marker_pair, self.zeros_pair ]
         self.spk_q.put( SpkData(data,'') )
-        self._is_playing = True
 
     def play(self, text:str, audio:AudioF32|None, sr:int|None=None ):
         """再生データを設定し、再生を開始"""
@@ -400,16 +481,33 @@ class AecRecorder:
             step:int = self.ds_chunk_size
             data:list[SpkPair] = [ SpkPair(play_f32[s:s+step],play_i16[s:s+step]) for s in range(0,size,step) ]
             self.spk_q.put( SpkData(data, text ) )
-            self._is_playing = True
+
+    def get_play_text(self) ->str:
+        aa:list[SpkData] = []
+        try:
+            while self.end_q.qsize()>0:
+                aa.append( self.end_q.get_nowait() )
+        except:
+            pass
+        text:str = "".join( [ a.text for a in aa ])
+        return text
 
     def cancel(self):
         """再生データを設定し、再生を開始"""
-        print("canlel ",end="")
+        print("[REC:canlel]",end="")
         try:
             while self.spk_q.qsize()>0:
                 self.spk_q.get_nowait()
         except:
             pass
+
+    def pause(self,b:bool):
+        if self._spk_pause != b:
+            if b:
+                print("[REC:pause]",end="")
+            else:
+                print("[REC:resume]",end="")
+        self._spk_pause = b
 
     def _callback(self, inbytes:np.ndarray, outdata:np.ndarray, frames:int, ctime, status: CallbackFlags ) ->None:
         if status.input_overflow:
@@ -417,7 +515,6 @@ class AecRecorder:
         if status.output_underflow:
             print("[output_underflow]")
         # inbytesのサイズは Streamのblocksizeに一致する
-        st:float = time.time()
         try:
             # もらったデータはコピーしないと後で上書きされちゃう
             mic_data:AudioI16 = inbytes[:,0].copy()
@@ -448,7 +545,7 @@ class AecRecorder:
                     print(f"[SND]delay:NotFound")
 
             try:
-                if self.play_spk is None and self.spk_q.qsize()>0:
+                if self.play_spk is None and self.spk_q.qsize()>0 and not self._spk_pause:
                     self.play_spk = self.spk_q.get_nowait()
                     self.play_list = self.play_spk.seq
                     self.play_pos = 0
@@ -461,6 +558,7 @@ class AecRecorder:
                     play = self.play_list[self.play_pos]
                     self.play_pos += 1
                     if self.play_pos>=len(self.play_list):
+                        self.end_q.put(self.play_spk)
                         self.play_spk = None
             if play is not None:
                 # 再生データが設定されている場合は再生
@@ -475,8 +573,6 @@ class AecRecorder:
                 # 再生してない
                 if self._post_play_count>0:
                     self._post_play_count-=1
-                else:
-                    self._is_playing = False
                 play = self.zeros_pair
 
             outdata[:,0] = play.i16[:]
@@ -484,10 +580,6 @@ class AecRecorder:
         except:
             traceback.print_exc()
         finally:
-            et:float = time.time()
-            tt = et-st
-            if tt>0.01:
-                print(f"[{tt:.3f}]", end="")
             self._callback_cnt+=1
 
     def get_raw_audio(self) ->tuple[AudioF32,AudioF32]:
@@ -517,46 +609,31 @@ class AecRecorder:
         self.spk_buffer = [s for s in self.spk_buffer[-spk_sz:]]
 
         return mic_f32,spk_f32
-
-    # def get_raw_audiopppp(self,keep:bool=False) ->tuple[AudioF32,AudioF32]:
-    #     with self._lock:
-    #         if self._detect_cnt>=0:
-    #             return EmptyF32,EmptyF32
-    #         if keep:
-    #             mic_buf:list[AudioI16]=self.mic_buffer.copy()
-    #         else:
-    #             mic_buf:list[AudioI16]=self.mic_buffer
-    #             self.mic_buffer = []
-
-    #         delay_samples = max(0,self.delay_samples+self.aec_offset)
-    #         x:int = int( (delay_samples+len(self.aec_w))/self.ds_chunk_size ) + 1
-    #         spk_buf: list[AudioF32] = self.spk_buffer[-len(mic_buf)-x:].copy()
-    #         if not keep:
-    #             self.spk_buffer = self.spk_buffer[-self._detect_num:]
-
-    #     if len(mic_buf)==0:
-    #         return EmptyF32, EmptyF32
-    #     mic_f32:AudioF32 = i16_to_f32( np.concatenate( mic_buf ) ) * self.mic_boost
-    #     spk_f32:AudioF32 = np.concatenate( spk_buf )
-    #     spk_f32 = spk_f32[-len(mic_f32)-delay_samples-len(self.aec_w):len(spk_f32)-delay_samples]
-    #     return mic_f32,spk_f32
     
     def get_aec_audio(self) ->AecRes:
         mic_f32, spk_f32 = self.get_raw_audio()
         if len(mic_f32)==0:
-            return AecRes(mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32)
-        lms_f32, mask, errors = nlms_echo_cancel2( mic_f32, spk_f32, self.aec_mu, self.aec_w )
+            return AecRes(mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32)
+        lms_f32, convergence, errors = nlms_echo_cancel2( mic_f32, spk_f32, self.aec_mu, self.aec_w )
         # lms_f32:AudioF32 = rls_echo_cancel( mic_f32, spk_f32, 0.98, 100, self.aec_w, self.aec_offset )
         vad = self.silerovad((lms_f32))
-        for i,v in enumerate(vad):
-            if self.vad_sw==0.0:
-                if v>self.vad_up:
-                    self.vad_sw = 1.0
+        pre = 6400
+        post = 6400+3200
+        c_up = 0.35
+        d_dn = 2.0
+        vadmask = np.zeros( len(vad), dtype=np.float32 )
+        for i in range(len(lms_f32)):
+            v = vad[i]
+            c = convergence[i]
+            if v>self.vad_up and c>c_up:
+                if self.vad_sw==0:
+                    vadmask[ max(0,i-pre):i] = 1.0
+                self.vad_sw = post
             else:
-                if v<self.vad_dn:
-                    self.vad_sw = 0.0
-            mask[i] *= self.vad_sw
-        ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, mask, vad, errors)
+                if self.vad_sw>0:
+                    self.vad_sw-=1
+            vadmask[i] = 1.0 if self.vad_sw>0 else 0.0
+        ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, vadmask, vad, convergence, errors)
         return ret
 
     def get_audio(self) ->tuple[AudioF32,AudioF32]:
@@ -596,3 +673,59 @@ def list_microphones():
 
 #     p.terminate()
 
+def save_and_plot( filename:str, rec:AecRes, show:bool=False ):
+    basename = os.path.splitext(filename)[0]
+    print(f"[OUT] save {basename} {audio_info(rec.audio,sample_rate=rec.sampling_rate)}")
+    rec.save( filename )
+
+    max_y = round( 0.05 + max( np.max(np.abs(rec.raw)), np.max(np.abs(rec.spk)), np.max(np.abs(rec.audio)) ), 1 )
+    x1 = np.array( range(len(rec.raw)) )
+    x2 = np.array( range(len(rec.spk))) - (len(rec.raw)-len(rec.spk))
+    mask_bool:list[bool] = [ m>0.0 for m in rec.mask ]
+
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(12,3))
+    plt.plot(x1,rec.raw, label='Mic')
+    plt.plot(x2,rec.spk, label='Spk', alpha=0.2)
+    plt.ylim(-max_y,max_y)
+    plt.legend()
+    plt.savefig(f'{basename}_spk.png',dpi=300)
+
+    # 図の作成
+    fig, ax1 = plt.subplots(figsize=(12, 3))
+    # Y1軸 (Mic と Lms Mic) にデータをプロット
+    ax1.fill_between(x1, -max_y, max_y, where=mask_bool, color='green', lw=0, alpha=0.1, label='mask' ) 
+    ax1.plot(x1,rec.raw, label='Mic', alpha=0.3)
+    ax1.plot(x1,rec.audio, label='LMS', alpha=0.3)
+    ax1.set_ylim(-max_y,max_y)
+    ax1.set_ylabel('signal')
+    ax1.legend(loc='upper left')
+    # Y2軸 Maskをプロット
+    ax2 = ax1.twinx()    # 画像を保存
+    ax2.plot(x1,rec.vad, label='vad', color='red', alpha=0.1)
+    ax2.plot(x1,rec.convergence, label='convergence', color='yellow', alpha=0.9)
+    ax2.set_ybound(0.0,1.0)
+    ax2.set_ylabel('rate')
+    ax2.legend(loc='upper right')
+    # 画像を保存
+    plt.savefig(f'{basename}_lms.png', dpi=300)
+
+    # 図の作成
+    fig, ax1 = plt.subplots(figsize=(12, 3))
+    # Y1軸 Errorsをプロット
+    ax1.plot(x1,rec.errors, color='red', label='Errors')
+    ax1.set_ylabel('Errors')
+    ax1.legend(loc='upper left')
+    # Y2軸 Maskをプロット
+    ax2 = ax1.twinx()
+    ax2.fill_between(x1, 0, rec.mask, color='green', lw=0, alpha=0.2, label='mask' ) 
+    ax2.set_ybound(0.0,1.0)
+    ax2.set_ylabel('Mask')
+    ax2.legend(loc='upper right')
+    # 画像を保存
+    plt.savefig(f'{basename}_errors.png', dpi=300)
+
+    # グラフを表示
+    if show:
+        plt.show()
