@@ -215,7 +215,7 @@ def main_x():
                 break
 
     print("---whisper raw mic")
-    wres = w_transcrib(rec.audio,model_size)
+    wres = w_transcrib(rec.raw,model_size)
     print(wres)
 
     print("---whisper lms mic")
