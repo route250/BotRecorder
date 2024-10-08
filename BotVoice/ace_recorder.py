@@ -8,6 +8,7 @@ import audioop
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.fft import rfft, irfft
 import sounddevice as sd
 from sounddevice import CallbackFlags
 from silero_vad import load_silero_vad
@@ -373,7 +374,7 @@ class AecRecorder:
         self.marker_bytes:bytes = f32_to_i16( tone1 ).tobytes()
         self.marker_pair:SpkPair = SpkPair( self.marker_tone_f32, self.marker_tone_I16 )
         self.zeros_pair:SpkPair = SpkPair( self.zeros_f32, self.zeros_i16 )
-        self._detectbuf:bytes = b''
+        self._detectbuf:AudioF32 = EmptyF32
         self._detect_cnt:int = -1
         self._before_pos:int = -1
         self.delay_samples:int = 0
@@ -506,6 +507,16 @@ class AecRecorder:
                 print("[REC:resume]",end="")
         self._spk_pause = b
 
+    def findfit(self, audio_f32:NDArray[np.float32], key_f32:NDArray[np.float32]):
+        # FFTを使った相互相関の計算とキーの位置検出の平均速度を評価
+        n = len(audio_f32) + len(key_f32) - 1
+        audio_fft = rfft(audio_f32, n)
+        key_fft = rfft(key_f32, n)
+        correlation_fft = irfft(audio_fft * np.conjugate(key_fft), n)
+        j_opt = np.argmax(correlation_fft)
+        fj_opt = correlation_fft[j_opt] / np.sum(key_f32 ** 2)  # スケーリング係数の計算
+        return int(j_opt), float(fj_opt)
+
     def _callback(self, inbytes:np.ndarray, outdata:np.ndarray, frames:int, ctime, status: CallbackFlags ) ->None:
         if status.input_overflow:
             print("[input_overflow]")
@@ -519,18 +530,20 @@ class AecRecorder:
             if 0<=self._detect_cnt:
                 # 位置検出実行中
                 if self._detect_cnt<self._detect_num:
-                    self._detectbuf += mic_data.tobytes()
-                    pos,factor = audioop.findfit( self._detectbuf, self.marker_bytes ) if self._detect_cnt>5 else (0,0.0)
+                    x32 = i16_to_f32(mic_data)
+                    self._detectbuf = np.concatenate( (self._detectbuf,x32) )
+                    pos,factor = self.findfit( self._detectbuf, self.marker_tone_f32 ) if self._detect_cnt>5 else (0,0.0)
                     if self._detect_cnt>5 and 0<=pos and pos==self._before_pos:
-                        tmp = self._detectbuf[pos*2:pos*2+self.ds_chunk_size]
-                        lo,hi = audioop.minmax( tmp, 2 )
-                        maxlv = (abs(lo)+abs(hi))/2/32768
+                        tmp = np.abs(self._detectbuf[pos:pos+self.ds_chunk_size])
+                        lo = np.min(tmp)
+                        hi = np.max(tmp)
+                        maxlv = (lo+hi)/2
                         self.mic_boost = self._marker_lv/maxlv if maxlv>0 else 1
                         delay:int = pos + self.ds_chunk_size
                         print(f"[SND]delay: pos:{pos} OK {delay} factor:{factor} maxlv:{maxlv} boost:{self.mic_boost}")
                         self.delay_samples = delay
                         self._detect_cnt=-1
-                        self._detectbuf=b''
+                        self._detectbuf=EmptyF32
                     else:
                         print(f"[SND]delay: pos:{pos}")
                         self._detect_cnt+=1
@@ -538,7 +551,7 @@ class AecRecorder:
                 else:
                     self._detect_cnt = -1
                     self.delay_samples = 0
-                    self._detectbuf=b''
+                    self._detectbuf=EmptyF32
                     print(f"[SND]delay:NotFound")
 
             try:
@@ -564,7 +577,7 @@ class AecRecorder:
                     # 位置検出データの開始
                     self._detect_cnt = 0
                     self._before_pos = -1
-                    self._detectbuf = b''
+                    self._detectbuf = EmptyF32
                     print(f"[SND]delay:Start")
             else:
                 # 再生してない
