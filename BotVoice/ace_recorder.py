@@ -212,7 +212,7 @@ def nlms_echo_cancel2(mic: AudioF32, spk_f32: AudioF32, mu: float, w: NDArray[np
 
     return np.clip(cancelled_signal,-0.99,0.99),convergence,errors
 
-def evaluate_convergence(coeff:NDArray[np.float64], window_factor=6) ->float:
+def evaluate_convergence(coeff:NDArray[np.float64], window_factor=10) ->float:
     num_taps = len(coeff)
     # widthをnum_taps/6の半分に設定
     half_width = int(num_taps / window_factor / 2)
@@ -357,7 +357,7 @@ class AecRecorder:
         self.play_list:list[SpkPair] = []
         self.play_pos:int = 0
         self._post_play_count:int = 0
-        self._post_play_num:int = 0
+        self._post_play_num:int = self.sample_rate//self.ds_chunk_size+1
 
         # 録音データ
         self.mic_q:Queue[RecData] = Queue()
@@ -382,6 +382,11 @@ class AecRecorder:
         self.aec_mu = 0.2 # 学習率
         self.aec_taps = 700 # フィルターの長さ
         self.aec_offset = -100 # 先頭がよくずれるので余裕を
+        self.aec_convergence_pos:int = 0
+        self.aec_convergence_val:float = 0.0
+        self.aec_convergence_up:float = 0.45
+        self.aec_singal:NDArray[np.float64] = np.zeros( 100, dtype=np.float64 )
+        self.aec_errors:NDArray[np.float64] = np.zeros( 2000, dtype=np.float64 )
         peek = max(self.aec_taps, self.aec_taps + self.aec_offset)-2
         if peek<self.aec_taps:
             w1= np.linspace(0.0,0.5,peek,dtype=np.float64)
@@ -606,12 +611,11 @@ class AecRecorder:
         mic_f32, spk_f32 = self.get_raw_audio()
         if len(mic_f32)==0:
             return AecRes(mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32)
-        lms_f32, convergence, errors = nlms_echo_cancel2( mic_f32, spk_f32, self.aec_mu, self.aec_w )
-        # lms_f32:AudioF32 = rls_echo_cancel( mic_f32, spk_f32, 0.98, 100, self.aec_w, self.aec_offset )
+        lms_f32, convergence, errors = self.nlms_echo_cancel2( mic_f32, spk_f32 )
         vad = self.silerovad((lms_f32))
         pre = 6400
         post = 6400+3200
-        c_up = 0.35
+        c_up = self.aec_convergence_up
         d_dn = 2.0
         vadmask = np.zeros( len(vad), dtype=np.float32 )
         for i in range(len(lms_f32)):
@@ -631,6 +635,96 @@ class AecRecorder:
     def get_audio(self) ->tuple[AudioF32,AudioF32]:
         ret:AecRes = self.get_aec_audio()
         return ret.audio, ret.mask
+
+    def nlms_echo_cancel2(self, mic: AudioF32, spk_f32: AudioF32) -> tuple[AudioF32,AudioF32,AudioF32]:
+        """
+        LMSアルゴリズムによるエコーキャンセルを実行する関数。
+
+        Parameters:
+        mic (np.ndarray): マイクからの入力信号
+        spk (np.ndarray): スピーカーからの出力信号
+
+        self.mu (float): ステップサイズ（学習率）
+        self.w (np.ndarray): フィルタ係数ベクトルの初期値
+
+        Returns:
+        np.ndarray: エコーキャンセル後の信号
+        """
+        validate_f32(mic,'mic')
+        validate_f32(spk_f32, 'spk')
+        validate_f64(self.aec_w,'coeff')
+        mic_len = len(mic)
+        num_taps = len(self.aec_w)
+        if mic_len != len(spk_f32)-num_taps:
+            raise TypeError("invalid array length")
+
+        # エコーキャンセル後の信号を保存する配列
+        cancelled_signal = np.zeros(mic_len,dtype=np.float32)
+        # 誤差を記録する配列
+        errors = np.zeros(mic_len,dtype=np.float32)
+        convergence = np.ones(mic_len,dtype=np.float32)
+
+        spk_f64 = spk_f32.astype(np.float64)
+
+        AEC_PLIMIT:float = 1e30
+        maxlv = np.sum(np.abs(self.aec_w))
+        if maxlv>AEC_PLIMIT:
+            print(f"[WARN] w is too large {maxlv}")
+            self.aec_w *= (AEC_PLIMIT/maxlv)
+
+        # スピーカー出力の全項目の二乗を事前に計算
+        spk_squared = spk_f64 ** 2
+        # 音の有無
+        active = np.abs(spk_f32)>0.0001
+        # 有効な範囲内でのみ計算を実行
+        spk_on = np.zeros(mic_len,dtype=np.float64)
+        factor = np.zeros(mic_len,dtype=np.float64)
+        for n in range(mic_len):
+            factor[n] = np.sum(spk_squared[n:n+num_taps])+1e-9
+            active_rate = np.sum(active[n:n+num_taps])/num_taps
+            spk_on[n] = 1.0 if active_rate>0.9 else 0.0
+        mu_factor = np.clip( self.aec_mu/factor, self.aec_mu/100, self.aec_mu ) * spk_on
+        # ダブルトーク検出用のエラーレベル
+        error_rate = 1.5
+        ave_signal = np.mean(self.aec_singal)
+        ave_error = np.mean(self.aec_errors)
+        c_width:int = 512
+        # LMSアルゴリズムのメインループ
+        for mu3 in (self.aec_mu,):
+            for n in range(mic_len):
+                    # スピーカー出力 spk の一部をスライスして使う (直近の num_taps サンプルを使う)
+                    spk_slice = spk_f64[n:n+num_taps]  # スライスしてタップ分の信号を取得
+                    # スピーカー出力がなければ処理しない
+                    if np.count_nonzero(spk_slice)==0:
+                        cancelled_signal[n] = mic[n]
+                        self.aec_convergence_pos = 0
+                        continue
+                    # スピーカー出力 spk_slice とフィルタ係数 w の内積によるフィルタ出力 y(n) を計算
+                    y = np.dot(self.aec_w, spk_slice)
+                    # エラー e(n) を計算 (マイク信号 mic[n] とフィルタ出力 y の差)
+                    e = mic[n] - y
+                    # エコーキャンセル後の信号を計算 (マイク信号から予測されたエコーを引く)
+                    cancelled_signal[n] = e
+                    abs_e = np.abs(e)
+                    self.aec_singal[:-1] = self.aec_singal[1:]
+                    self.aec_singal[-1] = abs_e
+                    ave_signal = np.mean(self.aec_singal)
+                    er = ave_signal/(ave_error+1e-9)
+                    errors[n] = ave_error
+                    if True: # self.aec_convergence_val<self.aec_convergence_up or er<error_rate:
+                        self.aec_errors[:-1] = self.aec_errors[1:]
+                        self.aec_errors[-1] = abs_e
+                        ave_error = np.mean(self.aec_errors)
+                        # フィルタ係数の更新式
+                        factor = mu_factor[n] # np.dot(spk_slice, spk_slice)
+                        self.aec_w[:] = self.aec_w + (e*factor) * spk_slice
+                        # 収束の程度を判定
+                        if self.aec_convergence_pos==0:
+                            self.aec_convergence_val = evaluate_convergence( self.aec_w )
+                        self.aec_convergence_pos = (self.aec_convergence_pos+1)%c_width
+                        convergence[n] = self.aec_convergence_val
+
+        return np.clip(cancelled_signal,-0.99,0.99),convergence,errors
 
     def silerovad( self, x:AudioF32 ) ->AudioF32:
         chunk_size = 512
