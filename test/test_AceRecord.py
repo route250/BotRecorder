@@ -197,7 +197,7 @@ def main_x():
     time.sleep(0.5)
     recorder.play_marker()
 
-    for i,g in enumerate(files[:5]):
+    for i,g in enumerate(files[:10]):
         audio_i16 = load_wave( g, sampling_rate=sample_rate )
         print(g)
         #save_wave( f'tmp/voice{i:02d}_{g}.wav', audio_i16, sampling_rate=sample_rate, ch=1)

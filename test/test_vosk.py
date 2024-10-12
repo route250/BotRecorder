@@ -32,6 +32,7 @@ from BotVoice.segments import TranscribRes, Segment, Word
 from BotVoice.bot_audio import BotAudio,RATE,CHUNK_SEC,CHUNK_LEN
 from BotVoice.voice_base import VoiceBase
 from BotVoice.text_to_voice import TtsEngine
+from BotVoice.vosk_util import transcrib_strip, get_text
 
 def setup_openai_api():
     """
@@ -61,14 +62,6 @@ LLM_PROMPT:str = """音声会話型のAIのセリフを生成してください�
 相手の話した単語をランダムに選んで、関係のない単語や事柄を組み合わて意外性のあるシチュエーションで会話を誘導してください。
 科学技術ネタやITネタじゃなくて、日常の話題を優先してください。
 自分のネタに自分で突っ込まないことが何より重要です。"""
-
-IGNORE_WORDS=['小','えー','ん']
-def transcrib_strip(text:str) ->str|None:
-    if isinstance(text,str):
-        text = text.strip()
-        if len(text)>0 and text not in IGNORE_WORDS:
-            return text
-    return None
 
 def is_splitter(text:str) ->int:
     for w in ('、','!','?','！','？','。'):
@@ -123,7 +116,7 @@ class AecBot:
         if os.path.exists(self.aec_coeff_path):
             try:
                 print(f"load aec_coeff from {self.aec_coeff_path}")
-                self.recorder.load_aec_coeff(self.aec_coeff_path)
+                # self.recorder.load_aec_coeff(self.aec_coeff_path)
             except:
                 pass
         # STT
@@ -183,64 +176,69 @@ class AecBot:
             #
             while self.run and self.recorder.is_active():
                 now:float = time.time()
-                res:AecRes = self.recorder.get_aec_audio()
-                if len(res.audio)<=0:
-                    time.sleep(0.2)
-                    continue
+                try:
+                    res:AecRes = self.recorder.get_aec_audio()
+                    if len(res.audio)<=0:
+                        time.sleep(0.2)
+                        continue
 
-                logaudio += res
-                if logaudio.duration()>30:
-                    logcnt+=1
-                    fname=f"{logdir}/logaudio{logcnt:03d}.npz"
-                    print(f"[LOG] save {fname}" )
-                    logaudio.save( fname )
-                    logaudio.clear()
+                    logaudio += res
+                    if logaudio.duration()>30:
+                        logcnt+=1
+                        fname=f"{logdir}/logaudio{logcnt:03d}.npz"
+                        print(f"[LOG] save {fname}" )
+                        logaudio.save( fname )
+                        logaudio.clear()
 
-                if (now-start_time)>coeff_save_time:
-                    coeff_save_time += 30
-                    self.recorder.save_aec_coeff(self.aec_coeff_path)
+                    if (now-start_time)>coeff_save_time:
+                        coeff_save_time += 30
+                        self.recorder.save_aec_coeff(self.aec_coeff_path)
 
-                seg_f32 = res.audio * res.mask * 1.5
-                sample_count+=len(seg_f32)
-                
-                i16 = f32_to_i16(seg_f32)
-                if self.recognizer.AcceptWaveform(i16.tobytes()):
-                    vosk_res:dict = json.loads( self.recognizer.FinalResult() )
-                    text = transcrib_strip( vosk_res.get("text","") )
-                    if text is not None and len(text)>0:
-                        print(f"[Transcrib] Final {text}")
-                        self.transcrib_buffer += f" {text}"
-                        self.transcrib_partial = None
-                        last_sample = sample_count
-                    else:
-                        if self.transcrib_partial is not None:
-                            print(f"[Transcrib] reset")
+                    seg_f32 = res.audio * res.mask * 1.5
+                    sample_count+=len(seg_f32)
+                    
+                    i16 = f32_to_i16(seg_f32)
+                    if self.recognizer.AcceptWaveform(i16.tobytes()):
+                        vosk_res:dict = json.loads( self.recognizer.FinalResult() )
+                        text = get_text( vosk_res )
+                        if text is not None and len(text)>0:
+                            print(f"[Transcrib] Final {text}")
+                            self.transcrib_buffer += f" {text}"
                             self.transcrib_partial = None
-                            self.recorder.pause(False)
-                else:
-                    vosk_res = json.loads( self.recognizer.PartialResult() )
-                    text = transcrib_strip( vosk_res.get("partial","").strip() )
-                    if text is not None and len(text)>0:
-                        self.recorder.pause(True)
-                        if text != self.transcrib_partial:
-                            print(f"[Transcrib] Partial {text}")
-                            self.transcrib_partial = text
+                            last_sample = sample_count
+                        else:
+                            if self.transcrib_partial is not None:
+                                print(f"[Transcrib] reset")
+                                self.transcrib_partial = None
+                                self.recorder.pause(False)
                     else:
-                        if self.transcrib_partial is not None:
-                            print(f"[Transcrib] reset")
-                            self.transcrib_partial = None
-                            self.recorder.pause(False)
+                        vosk_res = json.loads( self.recognizer.PartialResult() )
+                        text = get_text( vosk_res )
+                        if text is not None and len(text)>0:
+                            self.recorder.pause(True)
+                            if text != self.transcrib_partial:
+                                print(f"[Transcrib] Partial {text}")
+                                self.transcrib_partial = text
+                        else:
+                            if self.transcrib_partial is not None:
+                                print(f"[Transcrib] reset")
+                                self.transcrib_partial = None
+                                self.recorder.pause(False)
 
-                if last_sample>0 and (sample_count-last_sample)>blank_samples:
-                    self.recorder.cancel()
-                    self.recorder.pause(False)
-                    self.transcrib_result.append(self.transcrib_buffer)
-                    self.transcrib_buffer = ''
-                    self.transcrib_id += 1
-                    last_sample = 0
-                    print(f"[Transcrib] Enter")
-                    for t in self.transcrib_result:
-                        print(f"   {t}")
+                    if last_sample>0 and (sample_count-last_sample)>blank_samples:
+                        self.recorder.cancel()
+                        self.recorder.pause(False)
+                        self.transcrib_result.append(self.transcrib_buffer)
+                        self.transcrib_buffer = ''
+                        self.transcrib_id += 1
+                        last_sample = 0
+                        print(f"[Transcrib] Enter")
+                        for t in self.transcrib_result:
+                            print(f"   {t}")
+                finally:
+                    xt:float = time.time()-now
+                    xt = max(.5-xt,.1)
+                    time.sleep(xt)
         except:
             print_exc()
         finally:
@@ -369,7 +367,7 @@ def main_coeff_plot():
             aec_coeff = self.recorder.get_aec_coeff()
         except:
             pass
-    abs_coeff = evaluate_convergence(aec_coeff)
+    abs_coeff,idx = evaluate_convergence(aec_coeff)
     print(f" {abs_coeff}")
     plt.figure()
     plt.plot(aec_coeff, label='aec_coeff', alpha=0.5)

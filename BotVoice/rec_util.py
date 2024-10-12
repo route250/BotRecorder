@@ -218,3 +218,63 @@ def generate_mixed_tone( duration_sec: float, tone_hz1: int, tone_hz2: int, samp
     audio = mixed_tone.astype(np.float32)
 
     return audio
+
+# 174Hz（ヘルツ）	安定の周波数と呼ばれ、人の内面に働きかけて心を安定させます。
+# 285Hz（ヘルツ）	促進の周波数。スピリチュアル性の高い周波数で、自然治癒力を高めて心身を整えてくれます。
+# 396Hz（ヘルツ）	解放の周波数といわれ、負の感情に働きかけて自己の解放を促します。
+# 417Hz（ヘルツ）	変化の周波数。意識だけではなく無意識にも働きかけ、マイナス思考からの回復を促します。
+# 528Hz（ヘルツ）   基本の周波数。副交感神経が優位になり、リラックス効果が期待できます。
+# 639Hz（ヘルツ）	調和の周波数。人とのつながりをもたらし、人間関係の向上を助けてくれます。
+# 741Hz（ヘルツ）	自由の周波数。表現力を高めてくれ、コミュニケーション力の向上を助けます。
+# 852Hz（ヘルツ）	直感の周波数といわれ、脳の松果を活性化させて、洞察力や直感力を高めてくれます。
+
+def add_tone(audio_data: AudioF32, sample_rate: int, frequency: int = 852, level: float = 0.01) -> AudioF32:
+    """
+    音声データに指定された周波数のトーン（サイン波）を追加し、元の音声データとのバランスを調整する関数。
+
+    Parameters:
+    - audio_data (np.ndarray): 元の音声データ（-1.0 から 1.0 の範囲が推奨される）。
+    - sample_rate (int): 音声データのサンプルレート（例: 16000）。
+    - frequency (int): 追加するトーンの周波数（デフォルトは 852Hz）。
+    - level (float): トーンの音量レベルを指定（デフォルトは 0.1）。この値が大きいほどトーンの音量が大きくなる。
+
+    Returns:
+    - np.ndarray: トーンが追加された音声データ。
+    """
+    # 元の音声データの長さに対応する時間軸を生成
+    time_axis = np.arange(len(audio_data)) / sample_rate
+    
+    # 指定された周波数のサイン波を生成
+    sine_wave = np.sin(2 * np.pi * frequency * time_axis)
+    
+    # 元の音声とトーンのバランスを調整
+    mixed_audio = (1 - level) * audio_data + level * sine_wave.astype(np.float32)
+    
+    # 音声データが -1.0 から 1.0 の範囲に収まるようにクリップ
+    mixed_audio = np.clip(mixed_audio, -1.0, 1.0)
+    
+    return mixed_audio
+
+def add_white_noise(audio_data: AudioF32, level: float = 0.01) -> AudioF32:
+    """
+    音声データにホワイトノイズを追加する関数。
+
+    Parameters:
+    - audio_data (np.ndarray): 元の音声データ（-1.0 から 1.0 の範囲が推奨される）。
+    - level (float): ノイズの強さを指定。0.0 から 1.0 の間で調整可能（デフォルトは 0.05）。
+
+    Returns:
+    - np.ndarray: ホワイトノイズが追加された音声データ。
+    """
+    # 音声データと同じ長さのホワイトノイズを、標準偏差0.5で生成。
+    # 約95％が±1の範囲内に収まる正規分布に基づいたノイズ。
+    white_noise = np.random.normal(0, 0.5, len(audio_data)).astype(np.float32)
+    
+    # ノイズを追加する際のバランス調整
+    # 元の音声データの影響を (1 - noise_level) で残し、ノイズは noise_level で加算
+    adjusted_audio = (1 - level) * audio_data + level * white_noise
+    
+    # 最終的に音声データが -1.0 から 1.0 の範囲内に収まるようにクリップ
+    noisy_audio = np.clip(adjusted_audio, -1.0, 1.0)
+    
+    return noisy_audio
