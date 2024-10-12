@@ -396,7 +396,6 @@ class AecRecorder:
         # 録音データ
         self.mic_boost:float = 1.0
         self.mic_q:Queue[RecData] = Queue()
-        self.spk_buffer:list[AudioF32] = [self.zeros_f32] * self._detect_num
 
         # 先頭マーカー検出
         self._marker_lv:float = 0.4
@@ -411,6 +410,8 @@ class AecRecorder:
         self._detect_cnt:int = -1
         self._before_pos:int = -1
         self.delay_samples:int = 0
+
+        self.spk_buffer:list[AudioF32] = [self.zeros_f32] * self._detect_num
 
         # エコーキャンセルフィルター
         self.aec_mu = 0.002 # 学習率
@@ -579,7 +580,7 @@ class AecRecorder:
                         self._detect_cnt+=1
                     else:
                         pos,mfactor = self.findfit( self._detectbuf, self.marker_tone_f32 )
-                        if 0<=pos and pos==self._before_pos:
+                        if 0.1<mfactor and mfactor <10.0 and 0<=pos and pos==self._before_pos:
                             self.mic_boost = self.mic_boost/mfactor
                             delay:int = pos + self.ds_chunk_size
                             print(f"[SND]delay: pos:{pos} factor:{mfactor} OK {delay} boost:{self.mic_boost}")
@@ -587,7 +588,7 @@ class AecRecorder:
                             self._detect_cnt=-1
                             self._detectbuf=EmptyF32
                         else:
-                            print(f"[SND]delay: pos:{pos}")
+                            print(f"[SND]delay: pos:{pos} factor:{mfactor}")
                             self._detect_cnt+=1
                             self._before_pos = pos
                 else:
