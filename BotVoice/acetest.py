@@ -177,7 +177,7 @@ class AecBot:
 
                 # coeff_diff_avg = round( np.mean(np.abs(current_coeff-prev_coeff)), 3 )
                 coeff_diff_avg = round( np.count_nonzero(mask)/len(mask), 1 )
-                concentration = round( evaluate_convergence(current_coeff),1 )
+                concentration,idx = evaluate_convergence(current_coeff)
                 if coeff_diff_avg!=prev_coeff_diff or concentration!=prev_concentration:
                     print(f" coeff:{coeff_diff_avg:.3f} concentration:{concentration:.2f}", end="")
                     prev_coeff_diff = coeff_diff_avg
@@ -349,7 +349,7 @@ def main_coeff_plot():
             aec_coeff = self.recorder.get_aec_coeff()
         except:
             pass
-    abs_coeff = evaluate_convergence(aec_coeff)
+    abs_coeff, idx = evaluate_convergence(aec_coeff)
     print(f" {abs_coeff}")
     plt.figure()
     plt.plot(aec_coeff, label='aec_coeff', alpha=0.5)
