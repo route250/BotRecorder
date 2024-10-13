@@ -1,6 +1,6 @@
 import json
 
-IGNORE_WORDS=['小','えー','ん','あ']
+IGNORE_WORDS=['小','えー','ん','あ','あー','ああ','あっ','と','す','こ']
 NOIZE_WORD='<noize>'
 def transcrib_strip(text:str) ->str|None:
     if isinstance(text,str):

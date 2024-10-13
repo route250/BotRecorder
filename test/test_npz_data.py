@@ -20,11 +20,11 @@ def run_npz(filename) ->AecRes:
     rec:AecRecorder = AecRecorder( device=None, pa_chunk_size=pa_chunk_size, sample_rate=sample_rate)
     mic_f32 = src.raw
     spk_f32 = src.spk
-    lms_f32, convergence, errors = rec.nlms_echo_cancel2( mic_f32, spk_f32 )
+    lms_f32, convergence, errors, mu = rec.nlms_echo_cancel2( mic_f32, spk_f32 )
     vadmask = convergence>0.8
     mask = vadmask.astype(np.float32)
     vad = np.zeros_like(mic_f32)
-    ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, mask, vad, convergence, errors)
+    ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, mask, vad, convergence, errors,mu)
     return ret
 
 def run_vosk(rec:AecRes):

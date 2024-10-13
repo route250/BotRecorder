@@ -32,7 +32,7 @@ from BotVoice.segments import TranscribRes, Segment, Word
 from BotVoice.bot_audio import BotAudio,RATE,CHUNK_SEC,CHUNK_LEN
 from BotVoice.voice_base import VoiceBase
 from BotVoice.text_to_voice import TtsEngine
-from BotVoice.vosk_util import transcrib_strip, get_text
+from BotVoice.vosk_util import transcrib_strip, get_text, NOIZE_WORD
 
 def setup_openai_api():
     """
@@ -63,12 +63,19 @@ LLM_PROMPT:str = """音声会話型のAIのセリフを生成してください�
 科学技術ネタやITネタじゃなくて、日常の話題を優先してください。
 自分のネタに自分で突っ込まないことが何より重要です。"""
 
-def is_splitter(text:str) ->int:
-    for w in ('、','!','?','！','？','。'):
+def find_split_pos(text:str) ->int:
+    idx:int = -1
+    for w in ('、','!','?','！','？','。','。'):
         i = text.find(w)
-        if i>=0:
-            return i
-    return -1
+        if i>=0 and (idx<0 or i<idx):
+            idx=i
+    return idx
+
+def talk_split(text:str) ->tuple[str,str]:
+    idx:int = find_split_pos(text[2:])
+    if idx<0:
+        return '',text
+    return text[:idx+2+1],text[idx+2+1:]
 
 class AecBot:
     def __init__(self):
@@ -148,13 +155,10 @@ class AecBot:
             pass
 
     def add_talk(self,mesg:str):
-        print(f"[AI]{mesg.strip()}")
-        trim_msg = mesg.replace("、"," ")
-        trim_msg = mesg.replace("。","、")
-        trim_msg = mesg.replace("・","")
-        aaa,model = self.tts._text_to_audio_by_voicevox(mesg,sampling_rate=self.sample_rate)
-        if aaa is not None:
-            self.recorder.play(mesg,aaa, sr=self.sample_rate)
+        print(f"[LLM]talkStart:{mesg.strip()}")
+        audio,model = self.tts._text_to_audio_by_voicevox(mesg,sampling_rate=self.sample_rate)
+        if audio is not None:
+            self.recorder.play(mesg,audio, sr=self.sample_rate)
 
     def th_transcrib(self):
         try:
@@ -173,6 +177,7 @@ class AecBot:
             logaudio:AecRes = AecRes.empty(self.sample_rate)
             logcnt:int = 0
             coeff_save_time:float = 5
+            is_noize:int = 0
             #
             while self.run and self.recorder.is_active():
                 now:float = time.time()
@@ -202,26 +207,32 @@ class AecBot:
                         vosk_res:dict = json.loads( self.recognizer.FinalResult() )
                         text = get_text( vosk_res )
                         if text is not None and len(text)>0:
-                            print(f"[Transcrib] Final {text}")
+                            is_noize = 0 if text!=NOIZE_WORD else is_noize+1
+                            if is_noize<=1:
+                                print(f"[Transcrib] Final {text}")
                             self.transcrib_buffer += f" {text}"
                             self.transcrib_partial = None
                             last_sample = sample_count
                         else:
                             if self.transcrib_partial is not None:
-                                print(f"[Transcrib] reset")
+                                if is_noize<=1:
+                                    print(f"[Transcrib] reset")
                                 self.transcrib_partial = None
                                 self.recorder.pause(False)
                     else:
                         vosk_res = json.loads( self.recognizer.PartialResult() )
                         text = get_text( vosk_res )
                         if text is not None and len(text)>0:
+                            is_noize = 0 if text!=NOIZE_WORD else is_noize+1
                             self.recorder.pause(True)
                             if text != self.transcrib_partial:
-                                print(f"[Transcrib] Partial {text}")
+                                if is_noize<=1:
+                                    print(f"[Transcrib] Partial {text}")
                                 self.transcrib_partial = text
                         else:
                             if self.transcrib_partial is not None:
-                                print(f"[Transcrib] reset")
+                                if is_noize<=1:
+                                    print(f"[Transcrib] reset")
                                 self.transcrib_partial = None
                                 self.recorder.pause(False)
 
@@ -261,7 +272,7 @@ class AecBot:
         openai_timeout = 5.0  # APIリクエストのタイムアウト時間
         openai_max_retries = 2  # リトライの最大回数
         openai_llm_model = 'gpt-4o-mini'  # 使用する言語モデル
-        openai_llm_model = 'gpt-4o'  # 使用する言語モデル
+        # openai_llm_model = 'gpt-4o'  # 使用する言語モデル
         openai_temperature = 0.7  # 応答の多様性を決定するパラメータ
         openai_max_tokens = 1000  # 応答の最大長
         # リクエストを作ります
@@ -283,7 +294,6 @@ class AecBot:
         )
         if not self.run or self.llm_run != self.transcrib_id:
             return
-        self.global_messages.append( {"role": "user", "content": user_input} )
 
         sentense:str = ""
         try:
@@ -293,10 +303,9 @@ class AecBot:
                     break
                 delta_response:str|None = part.choices[0].delta.content
                 if delta_response:
-                    sentense += delta_response
-                    if is_splitter( delta_response )>=0:
-                        self.add_talk(sentense)
-                        sentense = ''
+                    a,sentense = talk_split( sentense+delta_response)
+                    if a!='':
+                        self.add_talk(a)
         finally:
             if not self._is_llm_abort():
                 if len(sentense)>0:
@@ -307,14 +316,20 @@ class AecBot:
 
     def _th_main(self):
         try:
+            user_input:str = ''
             while self.run:
                 if self.transcrib_id == self.llm_run:
                     time.sleep(0.5)
                     continue
                 assistant_output = self.recorder.get_play_text()
-                print(f"[PLAYTEST]{assistant_output}")
-                self.global_messages.append( {"role": "assistant", "content": assistant_output} )
-                user_input = '\n'.join(self.transcrib_result)
+                if assistant_output != "":
+                    if user_input != '':
+                        print(f"[LLM]USER:{user_input}")
+                        self.global_messages.append( {"role": "user", "content": user_input} )
+                        user_input=''
+                    print(f"[LLM]AI:{assistant_output}")
+                    self.global_messages.append( {"role": "assistant", "content": assistant_output} )
+                user_input += ''.join(self.transcrib_result)
                 self.transcrib_result = []
                 self.llm_run = self.transcrib_id
                 self.th_get_response_from_openai(user_input)
@@ -374,6 +389,18 @@ def main_coeff_plot():
     plt.legend()
     plt.show()
 
+def main_split():
+    testdata = [
+        ('','',''),
+        ('やっほー、元気？','やっほー、','元気？'),
+        ('やっほ!元気？','やっほ!','元気？'),
+        ('あ、そうなんですね。それから？','あ、そうなんですね。','それから？'),
+    ]
+    for text,before,after in testdata:
+        a,b = talk_split(text)
+        print(f"{text} -> '{a}' | '{b}'")
+        if a!=before or b!=after:
+            print(f"ERROR:   '{before}' | '{after}'")
 if __name__ == "__main__":
     # main_vad()
     main()

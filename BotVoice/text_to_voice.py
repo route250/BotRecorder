@@ -204,6 +204,9 @@ class TtsEngine:
         if sv_url is None:
             return None,None
         try:
+            text = text.replace("、"," ")
+            text = text.replace("。","、")
+            text = text.replace("・","")
             # text = convert_to_katakana(text,cache_dir=self._katakana_dir)
             # text = convert_kuten(text)
             text = TtsEngine.__penpenpen(text, ' ')
@@ -215,9 +218,11 @@ class TtsEngine:
             data = res1.content
             res1_json:dict = json.loads(data)
             ss:float = res1_json.get('speedScale',1.0)
-            res1_json['speedScale'] = ss*1.1
+            #res1_json['speedScale'] = ss*1.1
             ps:float = res1_json.get('pitchScale',0.0)
-            res1_json['pitchScale'] = ps-0.1
+            res1_json['pitchScale'] = ps-0.05
+            res1_json['outputSamplingRate'] = sampling_rate
+            res1_json['volumeScale'] = 1.4
             data = json.dumps(res1_json,ensure_ascii=False)
             params = {'speaker': self.speaker, 'timeout': timeout }
             headers = {'content-type': 'application/json'}
@@ -259,5 +264,68 @@ if __name__ == "__main__":
     main()
 
 
+# {
+# "accent_phrases": [
+# {"moras": [{"text": "ラ", "consonant": "r", "consonant_length": 0.0461723729968071, "vowel": "a", "vowel_length": 0.13928572833538055, "pitch": 5.776627540588379}, {"text": "ッ", "consonant": null, "consonant_length": null, "vowel": "cl", "vowel_length": 0.047919608652591705, "pitch": 0.0}, {"text": "キ", "consonant": "k", "consonant_length": 0.05007735639810562, "vowel": "i", "vowel_length": 0.09579509496688843, "pitch": 6.114856719970703}, {"text": "イ", "consonant": null, "consonant_length": null, "vowel": "i", "vowel_length": 0.10513696819543839, "pitch": 6.020272254943848}, {"text": "ト", "consonant": "t", "consonant_length": 0.03081510402262211, "vowel": "o", "vowel_length": 0.0782502293586731, "pitch": 5.673038959503174}], "accent": 1, "pause_mora": null, "is_interrogative": false}, {"moras": [{"text": "イ", "consonant": null, "consonant_length": null, "vowel": "i", "vowel_length": 0.13532207906246185, "pitch": 5.544625282287598}, {"text": "エ", "consonant": null, "consonant_length": null, "vowel": "e", "vowel_length": 0.09317465871572495, "pitch": 5.658175468444824}, {"text": "バ", "consonant": "b", "consonant_length": 0.033238254487514496, "vowel": "a", "vowel_length": 0.17671720683574677, "pitch": 5.575825214385986}], "accent": 1, "pause_mora": null, "is_interrogative": false}], "speedScale": 1.0, "pitchScale": 0.0, "intonationScale": 1.0, "volumeScale": 1.0, "prePhonemeLength": 0.1, "postPhonemeLength": 0.1, "outputSamplingRate": 24000, "outputStereo": false, "kana": "ラ'ッキイト/イ'エバ"}
 
+#{
+#   "accent_phrases": [
+#     {
+#       "moras": [
+#         {
+#           "text": "ア",
+#           "consonant": null,
+#           "consonant_length": null,
+#           "vowel": "a",
+#           "vowel_length": 0.12207410484552383,
+#           "pitch": 5.685221195220947
+#         },
+#         {
+#           "text": "イ",
+#           "consonant": null,
+#           "consonant_length": null,
+#           "vowel": "i",
+#           "vowel_length": 0.09907257556915283,
+#           "pitch": 5.965353488922119
+#         },
+#         {
+#           "text": "ウ",
+#           "consonant": null,
+#           "consonant_length": null,
+#           "vowel": "u",
+#           "vowel_length": 0.009999999776482582,
+#           "pitch": 6.11332893371582
+#         },
+#         {
+#           "text": "エ",
+#           "consonant": null,
+#           "consonant_length": null,
+#           "vowel": "e",
+#           "vowel_length": 0.03609475493431091,
+#           "pitch": 6.05399227142334
+#         },
+#         {
+#           "text": "オ",
+#           "consonant": null,
+#           "consonant_length": null,
+#           "vowel": "o",
+#           "vowel_length": 0.2615998387336731,
+#           "pitch": 5.805164337158203
+#         }
+#       ],
+#       "accent": 3,
+#       "pause_mora": null,
+#       "is_interrogative": false
+#     }
+#   ],
+#   "speedScale": 1.0,
+#   "pitchScale": 0.0,
+#   "intonationScale": 1.0,
+#   "volumeScale": 1.0,
+#   "prePhonemeLength": 0.1,
+#   "postPhonemeLength": 0.1,
+#   "outputSamplingRate": 24000,
+#   "outputStereo": false,
+#   "kana": "アイウ'エオ"
+# }
 

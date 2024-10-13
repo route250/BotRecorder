@@ -58,10 +58,7 @@ def main_get():
         # 停止
         recorder.stop()
         time.sleep(0.5)
-        mic_f32, spk_f32 = recorder.get_raw_audio()
-        lms_f32, convergence_f32, errors_f32 = nlms_echo_cancel2( mic_f32, spk_f32, recorder.aec_mu, recorder.aec_w )
-        z = np.zeros(len(mic_f32),dtype=np.float32)
-        logdata = AecRes(lms_f32,mic_f32,spk_f32, z, z, convergence_f32, errors_f32, sampling_rate=sample_rate)
+        logdata = recorder.get_aec_audio()
         title='full'
         print("---")
 
@@ -75,15 +72,14 @@ def main_file():
 
     rec:AecRecorder = AecRecorder( device=None, pa_chunk_size=pa_chunk_size, sample_rate=sample_rate)
 
-    mic_f32:AudioF32 = load_wave('test/testData/aec_mic_input.wav', sampling_rate=16000)
-    spk_f32:AudioF32 = load_wave('test/testData/aec_spk_input.wav', sampling_rate=16000)
+    mic_f32:AudioF32 = load_wave('test/testData/aec/aec_mic_input.wav', sampling_rate=16000)
+    spk_f32:AudioF32 = load_wave('test/testData/aec/aec_spk_input.wav', sampling_rate=16000)
 
-    lms_f32, mask, errors = nlms_echo_cancel2( mic_f32, spk_f32, rec.aec_mu, rec.aec_w )
-    vad = errors
-    #save_and_plot( 'test', mic_f32, spk_f32, lms_f32, mask, vad, errors, sample_rate )
+    logdata:AecRes = rec.convert_aec_audio(mic_f32,spk_f32)
+    plot_aecrec( logdata, show=True )
 
 if __name__ == "__main__":
     #main_tome()
     #main()
-    main_get()
-    # main_file()
+    # main_get()
+    main_file()

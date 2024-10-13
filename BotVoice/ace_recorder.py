@@ -1,10 +1,7 @@
 import sys,os
-import time
 import traceback
 from typing import NamedTuple
 from queue import Queue
-import math
-import audioop
 
 import numpy as np
 from numpy.typing import NDArray
@@ -264,7 +261,7 @@ class AecRes:
 
     @staticmethod
     def empty(sampling_rate):
-        return AecRes(EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,sampling_rate=sampling_rate)
+        return AecRes(EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,EmptyF32,sampling_rate=sampling_rate)
 
     @staticmethod
     def from_file(filename):
@@ -272,7 +269,7 @@ class AecRes:
         rec.load(filename)
         return rec
 
-    def __init__(self,audio:AudioF32, raw:AudioF32, spk:AudioF32, mask:AudioF32, vad:AudioF32, convergence:AudioF32, errors:AudioF32, *, sampling_rate:int=16000 ):
+    def __init__(self,audio:AudioF32, raw:AudioF32, spk:AudioF32, mask:AudioF32, vad:AudioF32, convergence:AudioF32, errors:AudioF32,mu:AudioF32, *, sampling_rate:int=16000 ):
         self.sampling_rate = sampling_rate
         self.audio:AudioF32 = audio
         self.raw:AudioF32 = raw
@@ -281,6 +278,7 @@ class AecRes:
         self.vad:AudioF32 = vad
         self.convergence:AudioF32 = convergence
         self.errors:AudioF32 = errors
+        self.mu:AudioF32 = mu
 
     def clear(self):
         self.audio = EmptyF32
@@ -290,6 +288,7 @@ class AecRes:
         self.vad = EmptyF32
         self.convergence = EmptyF32
         self.errors = EmptyF32
+        self.mu = EmptyF32
 
     def __len__(self):
         return len(self.audio)
@@ -306,6 +305,7 @@ class AecRes:
             self.vad = res.vad
             self.convergence = res.convergence
             self.errors = res.errors
+            self.mu = res.mu
         else:
             self.audio = np.concatenate((self.audio, res.audio))
             self.raw = np.concatenate((self.raw, res.raw))
@@ -314,6 +314,7 @@ class AecRes:
             self.vad = np.concatenate((self.vad, res.vad))
             self.convergence = np.concatenate((self.convergence, res.convergence))
             self.errors = np.concatenate((self.errors, res.errors))
+            self.mu = np.concatenate((self.mu, res.mu))
         return self
 
     def __add__(self, res):
@@ -324,14 +325,15 @@ class AecRes:
         new_vad = np.concatenate((self.vad, res.vad)) if self.vad is not None else res.vad
         new_convergence = np.concatenate((self.convergence, res.convergence)) if self.convergence is not None else res.convergence
         new_errors = np.concatenate((self.errors, res.errors)) if self.errors is not None else res.errors
+        new_mu = np.concatenate((self.mu, res.mu)) if self.mu is not None else res.mu
 
-        return AecRes(new_audio, new_raw, new_spk, new_mask, new_vad, new_convergence, new_errors, sampling_rate=self.sampling_rate)
+        return AecRes(new_audio, new_raw, new_spk, new_mask, new_vad, new_convergence, new_errors,new_mu, sampling_rate=self.sampling_rate)
 
     def save(self, filename):
         # npzでファイルに保存する
         basename = os.path.splitext(filename)[0]
         npzname = basename+".npz"
-        np.savez(npzname, sampling_rate=self.sampling_rate, audio=self.audio, raw=self.raw, spk=self.spk, mask=self.mask, vad=self.vad, convergence=self.convergence, errors=self.errors)
+        np.savez(npzname, sampling_rate=self.sampling_rate, audio=self.audio, raw=self.raw, spk=self.spk, mask=self.mask, vad=self.vad, convergence=self.convergence, errors=self.errors,mu=self.mu)
         rawname = basename+"_mic.wav"
         save_wave(rawname,self.raw,ch=1,sampling_rate=self.sampling_rate)
         audioname = basename+"_lms.wav"
@@ -351,6 +353,7 @@ class AecRes:
             self.vad = data['vad']
             self.convergence = data['convergence']
             self.errors = data['errors']
+            self.mu = data['mu']
             if len(self.audio)!=len(self.raw) or len(self.audio)!=len(self.mask):
                 print(f"Error loading file {filename} invalid array length")
         except (IOError, ValueError) as e:
@@ -414,14 +417,15 @@ class AecRecorder:
         self.spk_buffer:list[AudioF32] = [self.zeros_f32] * self._detect_num
 
         # エコーキャンセルフィルター
-        self.aec_mu = 0.002 # 学習率
-        self.aec_min_mu = self.aec_mu/100
-        self.aec_taps = 500 # フィルターの長さ
+        self.aec_mu = 0.2 # 学習率
+        self.aec_min_mu = self.aec_mu/1000
+        self.aec_max_mu = self.aec_mu*10
+        self.aec_taps = 700 # フィルターの長さ
         self.aec_offset = -100 # 先頭がよくずれるので余裕を
         self.aec_convergence_pos:int = 0
         self.aec_convergence_val:float = 0.0
         self.aec_convergence_up:float = 0.25 # 音声判定レベル
-        self.aec_convergence_up2:float = 0.10 # ダブルトーク判定レベル
+        self.aec_convergence_up2:float = 0.20 # ダブルトーク判定レベル
         self.aec_convergence_up3:float = 0.20 # offset修正レベル
         self.lms_pause:int = 0
         self.lms_monitor:int = 0
@@ -502,7 +506,7 @@ class AecRecorder:
 
     def play(self, text:str, audio:AudioF32|None, sr:int|None=None ):
         """再生データを設定し、再生を開始"""
-        print("play ",end="")
+        # print("play ",end="")
         audio_f32:AudioF32 = to_f32(audio)
         if audio_f32 is None or len(audio_f32)==0:
             return
@@ -539,7 +543,7 @@ class AecRecorder:
             pass
 
     def pause(self,b:bool):
-        if self._spk_pause != b:
+        if self.is_playing() and self._spk_pause != b:
             if b:
                 print("[REC:pause]",end="")
             else:
@@ -556,10 +560,16 @@ class AecRecorder:
         correlation_fft = irfft(audio_fft * np.conjugate(key_fft), n)
         j_opt = int(np.argmax(correlation_fft))
         start_idx:int = int(j_opt)
-        opt_len:int = min( audio_len-start_idx, key_len)
-        key_eng = np.sum(key_f32[:opt_len]**2)
-        dat_eng = np.sum(audio_f32[start_idx:start_idx+opt_len]**2)
-        scale_factor = float( dat_eng/key_eng ) # スケーリング係数の計算
+        if start_idx<key_len or audio_len-key_len <= start_idx:
+            return -1, 1
+        before = audio_f32[start_idx-key_len:start_idx]
+        target = audio_f32[start_idx:start_idx+key_len]
+        key_lv = signal_ave(np.abs(key_f32))
+        before_lv = signal_ave(np.abs(before))
+        target_lv = signal_ave(np.abs(target))
+        if (target_lv/before_lv)<1.5:
+            return -2, 1
+        scale_factor = float( target_lv/key_lv ) # スケーリング係数の計算
         return start_idx, scale_factor
 
     def _callback(self, inbytes:np.ndarray, outdata:np.ndarray, frames:int, ctime, status: CallbackFlags ) ->None:
@@ -665,12 +675,12 @@ class AecRecorder:
     
     def convert_aec_audio(self,mic_f32:AudioF32,spk_f32:AudioF32) ->AecRes:
         if len(mic_f32)==0:
-            return AecRes(mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32)
-        lms_f32, convergence, errors = self.nlms_echo_cancel2( mic_f32, spk_f32 )
+            return AecRes(mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32)
+        lms_f32, convergence, errors,mu = self.nlms_echo_cancel2( mic_f32, spk_f32 )
         vadmask = convergence>0.7
         mask = vadmask.astype(np.float32)
         vad = np.zeros_like(lms_f32)
-        ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, mask, vad, convergence, errors)
+        ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, mask, vad, convergence, errors,mu)
         return ret
 
     def get_aec_audio(self) ->AecRes:
@@ -680,8 +690,8 @@ class AecRecorder:
     def get_vad_audio(self) ->AecRes:
         mic_f32, spk_f32 = self.get_raw_audio()
         if len(mic_f32)==0:
-            return AecRes(mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32)
-        lms_f32, convergence, errors = self.nlms_echo_cancel2( mic_f32, spk_f32 )
+            return AecRes(mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32,mic_f32)
+        lms_f32, convergence, errors, mu = self.nlms_echo_cancel2( mic_f32, spk_f32 )
         vad = self.silerovad((lms_f32))
         pre = 6400
         post = 6400+3200
@@ -699,14 +709,14 @@ class AecRecorder:
                 if self.vad_sw>0:
                     self.vad_sw-=1
             vadmask[i] = 1.0 if self.vad_sw>0 else 0.0
-        ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, vadmask, vad, convergence, errors)
+        ret:AecRes = AecRes(lms_f32, mic_f32, spk_f32, vadmask, vad, convergence, errors, mu)
         return ret
 
     def get_audio(self) ->tuple[AudioF32,AudioF32]:
         ret:AecRes = self.get_aec_audio()
         return ret.audio, ret.mask
 
-    def nlms_echo_cancel2(self, mic: AudioF32, spk_f32: AudioF32) -> tuple[AudioF32,AudioF32,AudioF32]:
+    def nlms_echo_cancel2(self, mic: AudioF32, spk_f32: AudioF32) -> tuple[AudioF32,AudioF32,AudioF32,AudioF32]:
         """
         LMSアルゴリズムによるエコーキャンセルを実行する関数。
 
@@ -754,7 +764,7 @@ class AecRecorder:
             factor[n] = np.sum(spk_squared[n:n+num_taps])+1e-9
             active_rate = np.sum(active[n:n+num_taps])/num_taps
             spk_on[n] = 1.0 if active_rate>0.9 else 0.0
-        mu_factor = np.clip( self.aec_mu/factor, self.aec_min_mu, self.aec_mu ) * spk_on
+        mu_factor = np.clip( self.aec_mu/factor, self.aec_min_mu, self.aec_max_mu ) * spk_on
         # ダブルトーク検出用のエラーレベル
         error_rate_limit = 25
         c_width:int = 512
@@ -770,7 +780,7 @@ class AecRecorder:
                     print(" 🔀 ",end="")
                     self.lms_monitor=0
                 cancelled_signal[n] = mic[n]
-                self.aec_convergence_pos = 0
+                self.aec_convergence_pos = (self.aec_convergence_pos//c_width)*c_width
                 continue
             # スピーカー出力 spk_slice とフィルタ係数 w の内積によるフィルタ出力 y(n) を計算
             y = np.dot(self.aec_w, spk_slice)
@@ -799,9 +809,9 @@ class AecRecorder:
                 factor = mu_factor[n] # np.dot(spk_slice, spk_slice)
                 self.aec_w[:] = self.aec_w + (e*factor) * spk_slice
                 # 収束の程度を判定
-                if self.aec_convergence_pos==0:
+                if (self.aec_convergence_pos%c_width)==0:
                     self.aec_convergence_val, peak_index = evaluate_convergence( self.aec_w )
-                self.aec_convergence_pos = (self.aec_convergence_pos+1)%c_width
+                self.aec_convergence_pos += 1
                 convergence[n] = self.aec_convergence_val
                 if self.lms_monitor!=1:
                     print(f" ⤴️ ",end="")
@@ -823,7 +833,7 @@ class AecRecorder:
                 print(f"[p:{peak_index},{diff},{self.aec_offset}]",end="")
                 self.shift_value_and_clear(diff)
 
-        return np.clip(cancelled_signal,-0.99,0.99),convergence,errors
+        return np.clip(cancelled_signal,-0.99,0.99),convergence,errors,mu_factor.astype(np.float32)
 
     def shift_value_and_clear(self, shift_amount):
         # 移動量を計算
@@ -916,20 +926,20 @@ def plot_aecrec( rec:AecRes, *, filename:str|None=None, show:bool=False ):
     if basename is not None:
         plt.savefig(f'{basename}_lms.png', dpi=300)
 
-    # # 図の作成
-    # fig, ax1 = plt.subplots(figsize=(12, 3))
-    # # Y1軸 Errorsをプロット
-    # ax1.plot(x1,rec.errors, color='red', label='Errors')
-    # ax1.set_ylabel('Errors')
-    # ax1.legend(loc='upper left')
-    # # Y2軸 Maskをプロット
-    # ax2 = ax1.twinx()
-    # ax2.fill_between(x1, 0, rec.mask, color='green', lw=0, alpha=0.2, label='mask' ) 
-    # ax2.set_ybound(0.0,1.0)
-    # ax2.set_ylabel('Mask')
-    # ax2.legend(loc='upper right')
-    # if basename is not None:
-    #     plt.savefig(f'{basename}_errors.png', dpi=300)
+    # 図の作成
+    fig, ax1 = plt.subplots(figsize=(12, 3))
+    # Y1軸 Errorsをプロット
+    ax1.plot(x1,rec.errors, color='red', label='Errors')
+    ax1.set_ylabel('Errors')
+    ax1.legend(loc='upper left')
+    # Y2軸 Maskをプロット
+    ax2 = ax1.twinx()
+    ax2.fill_between(x1, 0, rec.mu, color='green', lw=0, alpha=0.8, label='mu' ) 
+    #ax2.set_ybound(0.0,1.0)
+    ax2.set_ylabel('mu')
+    ax2.legend(loc='upper right')
+    if basename is not None:
+        plt.savefig(f'{basename}_errors.png', dpi=300)
 
     # グラフを表示
     if basename is None or show:
