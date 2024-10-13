@@ -7,10 +7,11 @@ import numpy as np
 import requests
 from requests.adapters import HTTPAdapter
 import httpx
+import asyncio
 
 sys.path.append(os.getcwd())
 from BotVoice.rec_util import AudioF32, load_wave
-from BotVoice.net_utils import find_first_responsive_host
+from BotVoice.net_utils import find_first_responsive_host, a_find_first_responsive_host
 # from ..translate import convert_to_katakana, convert_kuten
 
 from logging import getLogger
@@ -157,6 +158,11 @@ class TtsEngine:
             self._voicevox_url = find_first_responsive_host(self._voicevox_list,self._voicevox_port)
         return self._voicevox_url
 
+    async def _a_get_voicevox_url( self ) ->str|None:
+        if self._voicevox_url is None:
+            self._voicevox_url = await a_find_first_responsive_host(self._voicevox_list,self._voicevox_port)
+        return self._voicevox_url
+
     @staticmethod
     def remove_code_blocksRE(markdown_text):
         # 正規表現を使用してコードブロックを検出し、それらを改行に置き換えます
@@ -248,6 +254,54 @@ class TtsEngine:
         self._disable_voicevox = time.time()
         return None,None
 
+    async def _a_text_to_audio_by_voicevox(self, text: str, *, sampling_rate: int) -> tuple[AudioF32|None, str|None]:
+        sv_url: str|None = await self._a_get_voicevox_url()
+        if sv_url is None:
+            return None, None
+        try:
+            text = text.replace("、", " ")
+            text = text.replace("。", "、")
+            text = text.replace("・", "")
+            # text = convert_to_katakana(text, cache_dir=self._katakana_dir)
+            # text = convert_kuten(text)
+            text = TtsEngine.__penpenpen(text, ' ')
+            timeout = 180.0
+            params = {'text': text, 'speaker': self.speaker}
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                res1 = await client.post(f'{sv_url}/audio_query', params=params)
+                if res1.status_code != 200:
+                    logger.error(f"[VOICEVOX] code:{res1.status_code} {res1.text}")
+                    return None, None
+                data = res1.content
+                res1_json: dict = json.loads(data)
+                ss: float = res1_json.get('speedScale', 1.0)
+                # res1_json['speedScale'] = ss * 1.1
+                ps: float = res1_json.get('pitchScale', 0.0)
+                res1_json['pitchScale'] = ps - 0.05
+                res1_json['outputSamplingRate'] = sampling_rate
+                res1_json['volumeScale'] = 1.4
+                params = {'speaker': self.speaker}
+                headers = {'content-type': 'application/json'}
+                res = await client.post(
+                    f'{sv_url}/synthesis',
+                    json=res1_json,
+                    params=params,
+                    headers=headers
+                )
+                if res.status_code == 200:
+                    model: str = TtsEngine.id_to_name(self.speaker)
+                    # wave形式 デフォルトは24kHz
+                    f32 = load_wave(res.content, sampling_rate=sampling_rate)
+                    return f32, model
+                logger.error(f"[VOICEVOX] code:{res.status_code} {res.text}")
+        except (httpx.HTTPError, asyncio.TimeoutError) as ex:
+            logger.error(f"[VOICEVOX] {type(ex)} {ex}")
+        except Exception as ex:
+            logger.error(f"[VOICEVOX] {type(ex)} {ex}")
+            logger.exception('')
+        self._disable_voicevox = time.time()
+        return None, None
+
     @staticmethod
     def convert_blank( text:str ) ->str:
         text = re.sub( r'[「」・、。]+',' ',text)
@@ -260,8 +314,14 @@ def main():
     if a is not None:
         print( min(a) )
 
+async def amain():
+    tts:TtsEngine = TtsEngine()
+    a,model = await tts._a_text_to_audio_by_voicevox('あいうえお',sampling_rate=16000)
+    if a is not None:
+        print( min(a) )
 if __name__ == "__main__":
-    main()
+    #main()
+    asyncio.run(amain())
 
 
 # {
